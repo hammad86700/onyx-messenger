@@ -31,6 +31,7 @@ import {
   Ban,
   Activity,
   Send,
+  Trash2,
 } from 'lucide-react';
 
 interface ResetModalData {
@@ -295,6 +296,42 @@ export default function AdminPortalPage() {
     }
   };
 
+  const handleDeleteUser = async (targetUser: Profile) => {
+    if (targetUser.id === currentAdmin?.id) {
+      alert('You cannot delete your own admin account.');
+      return;
+    }
+
+    if (isFounder(targetUser) || targetUser.username === 'hammad2006') {
+      alert('The Founder account is protected and cannot be deleted.');
+      return;
+    }
+
+    const confirmed = confirm(
+      `⚠️ PERMANENT USER DELETION ⚠️\n\nAre you sure you want to permanently DELETE and remove @${targetUser.username} (${targetUser.full_name}) from Onyx?\n\nThis will completely wipe their account, messages, and profile from the database. This action CANNOT be undone.`
+    );
+
+    if (!confirmed) return;
+
+    setActionLoadingId(`delete-${targetUser.id}`);
+    try {
+      const res = await fetch(`/api/admin/delete-user?user_id=${targetUser.id}`, {
+        method: 'DELETE',
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to delete user');
+
+      setUsers((prev) => prev.filter((u) => u.id !== targetUser.id));
+      setStats((prev) => ({ ...prev, users: Math.max(0, prev.users - 1) }));
+      showToast(`User @${targetUser.username} has been permanently removed from Onyx.`);
+    } catch (err: any) {
+      alert(err.message || 'Error deleting user');
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
   const handleLogout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
     router.push('/login');
@@ -328,27 +365,27 @@ export default function AdminPortalPage() {
       )}
 
       {/* Top Navigation */}
-      <header className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-md sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-4">
+      <header className="border-b border-slate-800/80 bg-slate-900/80 backdrop-blur-md sticky top-0 z-40">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 sm:gap-4 overflow-hidden">
             <Link
               href="/"
-              className="flex items-center gap-2 text-xs font-semibold text-slate-400 hover:text-white px-3 py-1.5 rounded-lg hover:bg-slate-800 transition-colors"
+              className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 hover:text-white px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors shrink-0 touch-manipulation active:scale-95"
             >
               <ArrowLeft className="w-4 h-4" />
               <span>Back to Chat</span>
             </Link>
 
-            <div className="h-4 w-px bg-slate-800" />
+            <div className="h-4 w-px bg-slate-800 shrink-0" />
 
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-rose-500/20 border border-rose-500/30 flex items-center justify-center text-rose-400 font-bold">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-7 h-7 rounded-lg bg-rose-500/20 border border-rose-500/30 flex items-center justify-center text-rose-400 font-bold shrink-0">
                 <Shield className="w-4 h-4" />
               </div>
-              <div>
-                <h1 className="text-sm font-bold text-white flex items-center gap-2">
-                  Super-Admin Portal
-                  <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">
+              <div className="min-w-0">
+                <h1 className="text-xs sm:text-sm font-bold text-white flex items-center gap-1.5">
+                  <span className="truncate">Super-Admin</span>
+                  <span className="text-[9px] uppercase font-mono px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30 shrink-0">
                     Restricted
                   </span>
                 </h1>
@@ -356,18 +393,18 @@ export default function AdminPortalPage() {
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
-            <SupportBadges />
-            <div className="flex items-center gap-2.5 pl-3 border-l border-slate-800">
-              <div className="w-8 h-8 rounded-full bg-brand-600/30 border border-brand-500/40 flex items-center justify-center text-brand-300 font-semibold text-xs">
+          <div className="flex items-center gap-2 sm:gap-4 shrink-0">
+            <SupportBadges className="hidden lg:flex" />
+            <div className="flex items-center gap-2 sm:gap-2.5 pl-2 sm:pl-3 border-l border-slate-800">
+              <div className="w-8 h-8 rounded-full bg-brand-600/30 border border-brand-500/40 flex items-center justify-center text-brand-300 font-semibold text-xs shrink-0">
                 {currentAdmin?.full_name?.[0] || 'A'}
               </div>
-              <div className="hidden sm:block text-left text-xs">
-                <p className="font-semibold text-slate-200 flex items-center gap-1.5">
+              <div className="hidden sm:block text-left text-xs min-w-0">
+                <p className="font-semibold text-slate-200 flex items-center gap-1.5 truncate">
                   <span>{currentAdmin?.full_name}</span>
                   {isFounder(currentAdmin) && <FounderBadge size="sm" />}
                 </p>
-                <p className="text-[10px] text-brand-400 font-mono">@{currentAdmin?.username}</p>
+                <p className="text-[10px] text-brand-400 font-mono truncate">@{currentAdmin?.username}</p>
               </div>
               <button
                 onClick={handleLogout}
@@ -559,8 +596,156 @@ export default function AdminPortalPage() {
             </div>
           </div>
 
-          {/* Table */}
-          <div className="overflow-x-auto">
+          {/* Mobile View: Sleek User Cards (< md screens) */}
+          <div className="block md:hidden divide-y divide-slate-800/60">
+            {filteredUsers.length === 0 ? (
+              <div className="text-center py-10 text-slate-500 text-sm">
+                No users found matching &quot;{searchQuery}&quot;.
+              </div>
+            ) : (
+              filteredUsers.map((user) => {
+                const isSelf = user.id === currentAdmin?.id;
+                const isActionLoading = actionLoadingId === user.id;
+                const isRoleLoading = actionLoadingId === `toggle-${user.id}`;
+                const isBanLoading = actionLoadingId === `ban-${user.id}`;
+                const isDeleteLoading = actionLoadingId === `delete-${user.id}`;
+
+                return (
+                  <div key={user.id} className="p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center font-bold text-sm text-brand-300 overflow-hidden shrink-0">
+                          {user.avatar_url ? (
+                            <img src={user.avatar_url} alt={user.username} className="w-full h-full object-cover" />
+                          ) : (
+                            user.full_name?.slice(0, 2).toUpperCase() || 'U'
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-semibold text-white text-sm flex items-center gap-1.5 truncate">
+                            <span className={user.is_banned ? 'line-through text-slate-400' : ''}>
+                              {user.full_name}
+                            </span>
+                            {isFounder(user) && <FounderBadge size="sm" />}
+                            {isSelf && (
+                              <span className="text-[10px] text-brand-400 bg-brand-500/10 border border-brand-500/20 px-1.5 py-0.2 rounded font-normal shrink-0">
+                                You
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-xs text-brand-400 font-mono truncate">@{user.username}</p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {user.is_admin ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                            <Shield className="w-2.5 h-2.5" />
+                            Admin
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-800 text-slate-400 border border-slate-700">
+                            User
+                          </span>
+                        )}
+
+                        {user.is_banned && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-500/20 text-red-300 border border-red-500/40">
+                            <Ban className="w-2.5 h-2.5" />
+                            Banned
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {user.status_text && (
+                      <p className="text-xs text-slate-400 italic truncate">
+                        {user.status_emoji} {user.status_text}
+                      </p>
+                    )}
+
+                    <div className="flex items-center justify-between pt-2 border-t border-white/5 gap-2">
+                      <span className="text-[10px] text-slate-500 font-mono shrink-0">
+                        Joined {new Date(user.created_at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </span>
+
+                      {/* Mobile Action Buttons */}
+                      <div className="flex items-center gap-1.5">
+                        {!isSelf && (
+                          <button
+                            onClick={() => handleToggleBan(user)}
+                            disabled={isBanLoading}
+                            title={user.is_banned ? 'Lift ban' : 'Ban user'}
+                            className={`p-2 rounded-xl text-xs font-medium border transition-colors touch-manipulation active:scale-95 ${
+                              user.is_banned
+                                ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                                : 'bg-red-500/10 text-red-300 border-red-500/30'
+                            }`}
+                          >
+                            {isBanLoading ? (
+                              <div className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                            ) : (
+                              <Ban className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        )}
+
+                        <button
+                          onClick={() => handleToggleAdmin(user)}
+                          disabled={isRoleLoading}
+                          title={user.is_admin ? 'Demote from admin' : 'Make admin'}
+                          className={`p-2 rounded-xl text-xs font-medium border transition-colors touch-manipulation active:scale-95 ${
+                            user.is_admin
+                              ? 'bg-rose-500/10 text-rose-300 border-rose-500/30'
+                              : 'bg-slate-800 text-slate-300 border-slate-700'
+                          }`}
+                        >
+                          {isRoleLoading ? (
+                            <div className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                          ) : user.is_admin ? (
+                            <UserX className="w-3.5 h-3.5" />
+                          ) : (
+                            <UserCheck className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+
+                        <button
+                          onClick={() => handleGenerateResetLink(user)}
+                          disabled={isActionLoading}
+                          title="Generate reset link"
+                          className="p-2 rounded-xl bg-brand-600/20 hover:bg-brand-600/30 text-brand-300 border border-brand-500/30 transition-colors touch-manipulation active:scale-95"
+                        >
+                          {isActionLoading ? (
+                            <div className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                          ) : (
+                            <KeyRound className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+
+                        {!isSelf && (
+                          <button
+                            onClick={() => handleDeleteUser(user)}
+                            disabled={isDeleteLoading}
+                            title="Permanently remove user"
+                            className="p-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 transition-colors touch-manipulation active:scale-95"
+                          >
+                            {isDeleteLoading ? (
+                              <div className="w-3.5 h-3.5 border-2 border-rose-400/40 border-t-rose-400 rounded-full animate-spin" />
+                            ) : (
+                              <Trash2 className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Desktop Table View (>= md screens) */}
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-left text-sm text-slate-300">
               <thead className="bg-slate-900/80 text-[11px] uppercase tracking-wider font-semibold text-slate-400 border-b border-slate-800">
                 <tr>
@@ -584,6 +769,7 @@ export default function AdminPortalPage() {
                     const isActionLoading = actionLoadingId === user.id;
                     const isRoleLoading = actionLoadingId === `toggle-${user.id}`;
                     const isBanLoading = actionLoadingId === `ban-${user.id}`;
+                    const isDeleteLoading = actionLoadingId === `delete-${user.id}`;
 
                     return (
                       <tr
@@ -722,6 +908,23 @@ export default function AdminPortalPage() {
                               )}
                               <span>Reset Link</span>
                             </button>
+
+                            {/* Delete User Permanently */}
+                            {!isSelf && (
+                              <button
+                                onClick={() => handleDeleteUser(user)}
+                                disabled={isDeleteLoading}
+                                title="Permanently delete user from Onyx"
+                                className="p-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 transition-colors flex items-center gap-1.5 touch-manipulation active:scale-95"
+                              >
+                                {isDeleteLoading ? (
+                                  <div className="w-3.5 h-3.5 border-2 border-rose-400/40 border-t-rose-400 rounded-full animate-spin" />
+                                ) : (
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                )}
+                                <span className="hidden sm:inline">Delete</span>
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>

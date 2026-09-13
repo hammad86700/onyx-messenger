@@ -146,18 +146,30 @@ export default function MobileSettingsSheet({
         </div>
       </div>
 
-      {/* Admin Actions (if admin) */}
+      {/* Admin Actions (Strictly rendered ONLY for Verified Admins - 100% Invisible to Public Users) */}
       {currentUser.is_admin && onOpenAdmin && (
         <div className="space-y-1">
           <button
             onClick={onOpenAdmin}
-            className="w-full flex items-center justify-between p-3.5 rounded-2xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 text-xs font-semibold transition-colors touch-manipulation"
+            className="w-full flex items-center justify-between p-3.5 rounded-2xl bg-gradient-to-r from-rose-950/40 via-red-900/30 to-slate-900 border border-rose-500/40 text-white shadow-lg touch-manipulation active:scale-98 transition-all hover:border-rose-500/70"
           >
-            <div className="flex items-center gap-2.5">
-              <Shield className="w-4 h-4" />
-              <span>Super-Admin Emergency Portal</span>
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-rose-600 via-pink-600 to-amber-600 flex items-center justify-center text-white shadow-md shadow-rose-500/25 shrink-0">
+                <Shield className="w-5 h-5 text-white" />
+              </div>
+              <div className="text-left overflow-hidden">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-bold text-white">Super-Admin Dashboard</span>
+                  <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30 font-semibold uppercase">
+                    Admin Only
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400 truncate">Manage users, delete accounts, announcements</p>
+              </div>
             </div>
-            <ChevronRight className="w-4 h-4" />
+            <div className="p-2 rounded-xl bg-rose-600/20 text-rose-300 border border-rose-500/30 shrink-0">
+              <ChevronRight className="w-4 h-4" />
+            </div>
           </button>
         </div>
       )}
