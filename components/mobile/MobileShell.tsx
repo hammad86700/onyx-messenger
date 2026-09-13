@@ -12,6 +12,7 @@ import MobileVaultView from './MobileVaultView';
 import MobileSettingsSheet from './MobileSettingsSheet';
 import StarredDrawer from '@/components/chat/StarredDrawer';
 import EditProfileModal from '@/components/chat/EditProfileModal';
+import ChangePasswordModal from '@/components/chat/ChangePasswordModal';
 import NewGroupModal from '@/components/chat/NewGroupModal';
 import { saveCachedMessage } from '@/lib/chat-cache';
 import { playReceiveSound } from '@/lib/sound';
@@ -39,6 +40,7 @@ export default function MobileShell({
   // Modals
   const [starredDrawerOpen, setStarredDrawerOpen] = useState(false);
   const [editProfileModalOpen, setEditProfileModalOpen] = useState(false);
+  const [changePasswordModalOpen, setChangePasswordModalOpen] = useState(false);
   const [newGroupModalOpen, setNewGroupModalOpen] = useState(false);
 
   // Theme
@@ -250,6 +252,7 @@ export default function MobileShell({
               onLogout={handleLogout}
               onOpenAdmin={currentUser.is_admin ? () => router.push('/admin') : undefined}
               onEditProfile={() => setEditProfileModalOpen(true)}
+              onChangePassword={() => setChangePasswordModalOpen(true)}
             />
           )}
         </div>
@@ -305,6 +308,12 @@ export default function MobileShell({
         onProfileUpdated={(updated) => {
           onUpdateCurrentUser(updated);
         }}
+      />
+
+      {/* Change Password Modal */}
+      <ChangePasswordModal
+        isOpen={changePasswordModalOpen}
+        onClose={() => setChangePasswordModalOpen(false)}
       />
 
       {/* New Group Modal */}

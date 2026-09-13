@@ -20,7 +20,9 @@ import {
   Shield,
   Smartphone,
   Sparkles,
+  KeyRound,
 } from 'lucide-react';
+import ChangePasswordModal from '@/components/chat/ChangePasswordModal';
 
 const PRESET_EMOJIS = ['💻', '🚀', '☕', '🎧', '🔥', '🌴', '🎯', '⚡', '🥑', '✨', '💤', '🧠'];
 
@@ -44,6 +46,7 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
 
   // Live Debounced Username Check
   const [checkingUsername, setCheckingUsername] = useState(false);
@@ -484,17 +487,28 @@ export default function SettingsPage() {
           </div>
 
           {/* Action Row */}
-          <div className="pt-4 border-t border-white/10 flex items-center justify-between">
-            {currentUser.is_admin && (
+          <div className="pt-4 border-t border-white/10 flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => router.push('/admin')}
-                className="px-3.5 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-semibold transition-colors flex items-center gap-1.5"
+                onClick={() => setIsChangePasswordOpen(true)}
+                className="px-3.5 py-2 rounded-xl bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-xs font-semibold transition-colors flex items-center gap-1.5 active:scale-95"
               >
-                <Shield className="w-3.5 h-3.5" />
-                <span>Super-Admin</span>
+                <KeyRound className="w-3.5 h-3.5" />
+                <span>Change Password</span>
               </button>
-            )}
+
+              {currentUser.is_admin && (
+                <button
+                  type="button"
+                  onClick={() => router.push('/admin')}
+                  className="px-3.5 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-semibold transition-colors flex items-center gap-1.5"
+                >
+                  <Shield className="w-3.5 h-3.5" />
+                  <span>Super-Admin</span>
+                </button>
+              )}
+            </div>
 
             <div className="flex items-center gap-3 ml-auto">
               <button
@@ -544,6 +558,11 @@ export default function SettingsPage() {
           <SupportBadges variant="compact" />
         </div>
       </main>
+
+      <ChangePasswordModal
+        isOpen={isChangePasswordOpen}
+        onClose={() => setIsChangePasswordOpen(false)}
+      />
     </div>
   );
 }
