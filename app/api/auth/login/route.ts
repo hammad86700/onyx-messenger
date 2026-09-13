@@ -20,7 +20,16 @@ export async function POST(request: NextRequest) {
     // 1. Check if identifier is an email address
     if (identifier.includes('@') && identifier.includes('.')) {
       const cleanEmail = identifier.toLowerCase();
-      const { data: usersData } = await supabaseAdmin.auth.admin.listUsers();
+      const { data: usersData, error: listErr } = await supabaseAdmin.auth.admin.listUsers();
+      if (listErr?.message?.includes('Unregistered API key')) {
+        return NextResponse.json(
+          {
+            error:
+              'Supabase Service Role Key error: The key in SUPABASE_SERVICE_ROLE_KEY is invalid. In Supabase, the service_role key must be copied from Supabase Dashboard -> Project Settings -> API (begins with eyJhbGciOi...).',
+          },
+          { status: 500 }
+        );
+      }
       targetAuthUser = usersData?.users.find(
         (u) => u.email?.toLowerCase() === cleanEmail
       );

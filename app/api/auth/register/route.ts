@@ -74,6 +74,15 @@ export async function POST(request: NextRequest) {
     });
 
     if (authError || !authData.user) {
+      if (authError?.message?.includes('Unregistered API key')) {
+        return NextResponse.json(
+          {
+            error:
+              'Supabase Service Role Key error: The key in SUPABASE_SERVICE_ROLE_KEY is invalid. In Supabase, the service_role key must be copied from Supabase Dashboard -> Project Settings -> API (begins with eyJhbGciOi...).',
+          },
+          { status: 500 }
+        );
+      }
       return NextResponse.json(
         { error: authError?.message || 'Failed to create account.' },
         { status: 400 }

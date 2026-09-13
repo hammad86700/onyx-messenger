@@ -106,7 +106,13 @@ export default function AuthView({ onAuthSuccess }: AuthViewProps) {
       router.refresh();
     } catch (err: any) {
       console.error('Login error:', err);
-      setError(err.message || 'Invalid email or password.');
+      let msg = err.message || 'Invalid email or password.';
+      if (msg === 'Failed to fetch') {
+        msg = 'Connection to server failed. Please check your internet connection or server status.';
+      } else if (msg.includes('Unregistered API key')) {
+        msg = 'Database Alert: SUPABASE_SERVICE_ROLE_KEY is invalid. Please set the real service_role secret from Supabase Dashboard.';
+      }
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -184,7 +190,13 @@ export default function AuthView({ onAuthSuccess }: AuthViewProps) {
       router.refresh();
     } catch (err: any) {
       console.error('Registration error:', err);
-      setError(err.message || 'Registration failed.');
+      let msg = err.message || 'Registration failed.';
+      if (msg === 'Failed to fetch') {
+        msg = 'Connection to server failed. Please check your internet connection or server status.';
+      } else if (msg.includes('Unregistered API key')) {
+        msg = 'Database Alert: SUPABASE_SERVICE_ROLE_KEY is invalid. Please set the real service_role secret from Supabase Dashboard.';
+      }
+      setError(msg);
     } finally {
       setLoading(false);
     }
