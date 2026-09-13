@@ -36,9 +36,9 @@ export default function MobileVaultView({
   }, []);
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col h-full overflow-y-auto px-4 py-6 space-y-4 bg-[#07080b] chat-scroll-viewport">
+    <div className="h-full w-full overflow-y-auto overflow-x-hidden px-4 pt-3 pb-28 space-y-3.5 bg-[#07080b] chat-scroll-viewport">
       {/* Header Info */}
-      <div className="p-4 rounded-3xl bg-gradient-to-tr from-amber-500/15 via-orange-500/10 to-transparent border border-amber-500/20 shadow-xl backdrop-blur-xl">
+      <div className="p-4 rounded-3xl bg-gradient-to-tr from-amber-500/15 via-orange-500/10 to-transparent border border-amber-500/20 shadow-xl backdrop-blur-xl shrink-0">
         <div className="flex items-center gap-3 mb-2">
           <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 text-amber-400 flex items-center justify-center shadow-lg">
             <Bookmark className="w-5 h-5" />
@@ -56,22 +56,22 @@ export default function MobileVaultView({
       {/* Saved Messages Direct Button */}
       <button
         onClick={onOpenSavedChat}
-        className="w-full p-4 rounded-2xl bg-slate-900/80 hover:bg-slate-800 border border-white/10 flex items-center justify-between text-left transition-all active:scale-98 touch-manipulation group shadow-lg"
+        className="w-full p-4 rounded-2xl bg-slate-900/80 hover:bg-slate-800 border border-white/10 flex items-center justify-between text-left transition-all active:scale-98 touch-manipulation group shadow-lg shrink-0"
       >
-        <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-amber-500 to-orange-600 flex items-center justify-center text-white shadow-md group-hover:scale-105 transition-transform">
+        <div className="flex items-center gap-3 min-w-0 flex-1 mr-2">
+          <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-amber-500 to-orange-600 flex items-center justify-center text-white shadow-md group-hover:scale-105 transition-transform shrink-0">
             <Bookmark className="w-5 h-5" />
           </div>
-          <div>
-            <h3 className="text-sm font-bold text-white">Saved Messages</h3>
-            <p className="text-[11px] text-slate-400">Personal scratchpad, drafts & cloud storage</p>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-sm font-bold text-white truncate">Saved Messages</h3>
+            <p className="text-[11px] text-slate-400 truncate">Personal scratchpad, drafts & cloud storage</p>
           </div>
         </div>
-        <ChevronRight className="w-5 h-5 text-slate-400 group-hover:text-white transition-colors" />
+        <ChevronRight className="w-5 h-5 text-slate-400 group-hover:text-white transition-colors shrink-0" />
       </button>
 
       {/* Starred Messages Section */}
-      <div className="p-4 rounded-2xl bg-slate-900/60 border border-white/5 space-y-3">
+      <div className="p-4 rounded-2xl bg-slate-900/60 border border-white/5 space-y-3 shrink-0">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Star className="w-4 h-4 text-amber-400 fill-amber-400" />

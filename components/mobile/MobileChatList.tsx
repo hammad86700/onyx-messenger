@@ -144,7 +144,7 @@ export default function MobileChatList({
       )}
 
       {/* Main List Area */}
-      <div className="flex-1 min-h-0 overflow-y-auto chat-scroll-viewport divide-y divide-white/[0.04]">
+      <div className="flex-1 min-h-0 overflow-y-auto chat-scroll-viewport divide-y divide-white/[0.04] pb-24">
         {/* Search Results Display */}
         {searchQuery.trim() && (
           <div className="p-3">
