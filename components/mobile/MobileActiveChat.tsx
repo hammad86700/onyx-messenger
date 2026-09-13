@@ -1,0 +1,815 @@
+'use client';
+
+import React, { useState, useEffect, useRef } from 'react';
+import { Conversation, Message, Profile, OnyxTheme, isFounder } from '@/types/database';
+import FounderBadge from '@/components/chat/FounderBadge';
+import MessageBubble from '@/components/chat/MessageBubble';
+import MobileAttachmentSheet from './MobileAttachmentSheet';
+import MobileMessageActionSheet from './MobileMessageActionSheet';
+import {
+  getCachedMessages,
+  getCachedMessagesBefore,
+  saveCachedMessages,
+  saveCachedMessage,
+  updateCachedMessage,
+} from '@/lib/chat-cache';
+import { resolveLocalMediaUrl } from '@/lib/media-cache';
+import { compressImage, isCompressibleImage } from '@/lib/image-compression';
+import { playSendSound, playReceiveSound } from '@/lib/sound';
+import {
+  ArrowLeft,
+  Search,
+  Plus,
+  Send,
+  Mic,
+  Square,
+  Bookmark,
+  Users,
+  CornerDownRight,
+  X,
+} from 'lucide-react';
+
+interface MobileActiveChatProps {
+  conversation: Conversation;
+  currentUser: Profile;
+  onlineUserIds: Set<string>;
+  onBack: () => void;
+  typingUsernames?: string[];
+  onTyping?: () => void;
+  onBroadcastMessage?: (msg: Message) => void;
+  currentTheme?: OnyxTheme;
+}
+
+export default function MobileActiveChat({
+  conversation,
+  currentUser,
+  onlineUserIds,
+  onBack,
+  typingUsernames = [],
+  onTyping,
+  onBroadcastMessage,
+  currentTheme = 'onyx-pure',
+}: MobileActiveChatProps) {
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const isLoadingOlderRef = useRef(false);
+
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  const [hasMoreOlder, setHasMoreOlder] = useState(true);
+
+  // Input & Reply State
+  const [text, setText] = useState('');
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [attachmentSheetOpen, setAttachmentSheetOpen] = useState(false);
+  const [actionSheetMessage, setActionSheetMessage] = useState<Message | null>(null);
+
+  // Voice Recording State
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+
+  const isGroup = conversation.type === 'group';
+  const isSaved = conversation.type === 'saved';
+
+  const partner = conversation.participants?.find((p) => p.user_id !== currentUser.id)?.profile;
+  const partnerFounder = isFounder(partner);
+  const isOnline = partner ? onlineUserIds.has(partner.id) : false;
+
+  const chatTitle = isSaved
+    ? 'Saved Messages'
+    : isGroup
+    ? conversation.name || 'Group Chat'
+    : partner?.full_name || 'Chat';
+
+  const chatSubtitle = isSaved
+    ? 'Personal Cloud'
+    : isGroup
+    ? `${conversation.participants?.length || 0} members`
+    : isOnline
+    ? 'Online'
+    : partner?.username ? `@${partner.username}` : 'Offline';
+
+  const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
+    messagesEndRef.current?.scrollIntoView({ behavior });
+  };
+
+  // 1. WhatsApp Model Local-First Cache: 0ms render
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadMessages = async () => {
+      const cached = await getCachedMessages(conversation.id, 30);
+      let latestTs: string | null = null;
+
+      if (cached.length > 0) {
+        latestTs = cached[cached.length - 1].created_at;
+      }
+
+      if (isMounted) {
+        if (cached.length > 0) {
+          // Resolve media URLs from local IndexedDB cache with 0 network calls
+          const resolved = await Promise.all(
+            cached.map(async (m) => {
+              if (m.media_url) {
+                const localUrl = await resolveLocalMediaUrl(m.id, m.media_url);
+                return { ...m, media_url: localUrl || m.media_url };
+              }
+              return m;
+            })
+          );
+          setMessages(resolved);
+          setLoading(false);
+          setTimeout(() => scrollToBottom('auto'), 20);
+        } else {
+          setLoading(true);
+        }
+      }
+
+      // Background query for newer messages only
+      try {
+        const queryUrl = latestTs
+          ? `/api/chat/messages?conversation_id=${conversation.id}&after=${encodeURIComponent(latestTs)}`
+          : `/api/chat/messages?conversation_id=${conversation.id}&limit=30`;
+
+        const res = await fetch(queryUrl);
+        const data = await res.json();
+
+        if (isMounted && data.messages) {
+          // Resolve local media URLs
+          const serverResolved: Message[] = await Promise.all(
+            data.messages.map(async (m: Message) => {
+              if (m.media_url) {
+                const localUrl = await resolveLocalMediaUrl(m.id, m.media_url);
+                return { ...m, media_url: localUrl || m.media_url };
+              }
+              return m;
+            })
+          );
+
+          if (latestTs) {
+            if (serverResolved.length > 0) {
+              setMessages((prev) => {
+                const existing = new Set(prev.map((m) => m.id));
+                const fresh = serverResolved.filter((m) => !existing.has(m.id));
+                if (fresh.length === 0) return prev;
+                return [...prev, ...fresh];
+              });
+              saveCachedMessages(conversation.id, serverResolved);
+              setTimeout(() => scrollToBottom('smooth'), 50);
+            }
+          } else {
+            setMessages(serverResolved);
+            saveCachedMessages(conversation.id, serverResolved);
+            setHasMoreOlder(data.has_more ?? serverResolved.length >= 30);
+            setTimeout(() => scrollToBottom('auto'), 50);
+          }
+        }
+      } catch (err) {
+        console.error('Mobile background sync error:', err);
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    };
+
+    loadMessages();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [conversation.id]);
+
+  // Cursor-Based Pagination on Scroll Top (scrollTop < 80px)
+  const handleScroll = async () => {
+    const container = scrollContainerRef.current;
+    if (!container || isLoadingOlderRef.current || !hasMoreOlder || messages.length === 0) return;
+
+    if (container.scrollTop < 80) {
+      const oldest = messages[0];
+      if (!oldest || !oldest.created_at) return;
+
+      isLoadingOlderRef.current = true;
+      setIsLoadingOlder(true);
+
+      const prevHeight = container.scrollHeight;
+      const prevTop = container.scrollTop;
+
+      try {
+        const cachedOlder = await getCachedMessagesBefore(conversation.id, oldest.created_at, 30);
+        let batch: Message[] = [];
+        let serverHasMore = false;
+
+        if (cachedOlder.length >= 30) {
+          batch = cachedOlder;
+          serverHasMore = true;
+        } else {
+          const res = await fetch(
+            `/api/chat/messages?conversation_id=${conversation.id}&before=${encodeURIComponent(
+              oldest.created_at
+            )}&limit=30`
+          );
+          const data = await res.json();
+          if (data.messages && data.messages.length > 0) {
+            batch = data.messages;
+            serverHasMore = Boolean(data.has_more);
+            saveCachedMessages(conversation.id, batch);
+          }
+        }
+
+        if (batch.length > 0) {
+          // Resolve media URLs
+          const resolvedBatch = await Promise.all(
+            batch.map(async (m) => {
+              if (m.media_url) {
+                const localUrl = await resolveLocalMediaUrl(m.id, m.media_url);
+                return { ...m, media_url: localUrl || m.media_url };
+              }
+              return m;
+            })
+          );
+
+          setMessages((prev) => {
+            const existing = new Set(prev.map((m) => m.id));
+            const fresh = resolvedBatch.filter((m) => !existing.has(m.id));
+            return [...fresh, ...prev];
+          });
+
+          setHasMoreOlder(serverHasMore);
+
+          // Anchor scroll height delta seamlessly
+          requestAnimationFrame(() => {
+            if (scrollContainerRef.current) {
+              const delta = scrollContainerRef.current.scrollHeight - prevHeight;
+              scrollContainerRef.current.scrollTop = prevTop + delta;
+            }
+          });
+        } else {
+          setHasMoreOlder(false);
+        }
+      } catch (err) {
+        console.error('Error loading older messages:', err);
+      } finally {
+        setIsLoadingOlder(false);
+        isLoadingOlderRef.current = false;
+      }
+    }
+  };
+
+  // Long-press detection with haptic feedback
+  const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleTouchStart = (msg: Message) => {
+    if (msg.is_deleted) return;
+    longPressTimerRef.current = setTimeout(() => {
+      // Trigger subtle 15ms haptic vibration on mobile
+      try {
+        if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+          navigator.vibrate?.(15);
+        }
+      } catch {}
+      setActionSheetMessage(msg);
+    }, 450);
+  };
+
+  const handleTouchEnd = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  // Send Message Handler with Client-Side Canvas WebP Compression (<150KB) & 0ms Optimistic Preview
+  const handleSendMessage = async (
+    msgContent: string,
+    file?: File | null,
+    isViewOnce = false
+  ) => {
+    playSendSound();
+
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+    let optMediaType: 'text' | 'image' | 'pdf' | 'file' | 'voice' = 'text';
+    let optUrl: string | null = null;
+    let fileToUpload = file;
+
+    if (file) {
+      const mime = file.type.toLowerCase();
+      if (mime.startsWith('audio/') || file.name.includes('voice')) {
+        optMediaType = 'voice';
+      } else if (mime.startsWith('image/')) {
+        optMediaType = 'image';
+      } else if (mime === 'application/pdf') {
+        optMediaType = 'pdf';
+      } else {
+        optMediaType = 'file';
+      }
+
+      // 0ms instant local preview
+      optUrl = URL.createObjectURL(file);
+
+      // Client-side canvas compression (<150KB WebP)
+      if (isCompressibleImage(file)) {
+        try {
+          const comp = await compressImage(file, { maxWidth: 1280, maxHeight: 1280, quality: 0.82 });
+          fileToUpload = comp.file;
+        } catch {
+          // Fallback to original
+        }
+      }
+    }
+
+    const optimistic: Message = {
+      id: tempId,
+      conversation_id: conversation.id,
+      sender_id: currentUser.id,
+      content: msgContent || null,
+      media_url: optUrl,
+      media_type: file ? optMediaType : 'text',
+      is_read: false,
+      created_at: new Date().toISOString(),
+      reply_to_id: replyingTo ? replyingTo.id : null,
+      reply_to: replyingTo,
+      file_name: file ? file.name : null,
+      file_size: fileToUpload ? fileToUpload.size : null,
+      view_once_viewed: isViewOnce ? false : null,
+      sender: currentUser,
+      status: 'sending',
+      temp_id: tempId,
+    };
+
+    setMessages((prev) => [...prev, optimistic]);
+    setReplyingTo(null);
+    setText('');
+    setTimeout(() => scrollToBottom('smooth'), 10);
+
+    try {
+      let finalMediaUrl: string | undefined;
+      let finalMediaType: 'text' | 'image' | 'pdf' | 'file' | 'voice' = 'text';
+      let finalFileName: string | undefined;
+      let finalFileSize: number | undefined;
+
+      if (fileToUpload) {
+        const formData = new FormData();
+        formData.append('file', fileToUpload);
+        formData.append('conversation_id', conversation.id);
+
+        const uploadRes = await fetch('/api/chat/upload', {
+          method: 'POST',
+          body: formData,
+        });
+
+        const uploadData = await uploadRes.json();
+        if (!uploadRes.ok) throw new Error(uploadData.error || 'Upload failed');
+
+        finalMediaUrl = uploadData.public_url;
+        finalMediaType = uploadData.media_type;
+        finalFileName = uploadData.file_name;
+        finalFileSize = uploadData.file_size;
+      }
+
+      const res = await fetch('/api/chat/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: conversation.id,
+          content: msgContent || null,
+          media_url: finalMediaUrl,
+          media_type: finalMediaType,
+          reply_to_id: optimistic.reply_to_id,
+          file_name: finalFileName,
+          file_size: finalFileSize,
+          view_once_viewed: isViewOnce ? false : null,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to send message');
+
+      const confirmed: Message = { ...data.message, status: 'sent' };
+      setMessages((prev) => prev.map((m) => (m.id === tempId ? confirmed : m)));
+      saveCachedMessage(confirmed);
+
+      if (onBroadcastMessage) onBroadcastMessage(confirmed);
+    } catch (err) {
+      console.error('Send error:', err);
+      setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, status: 'error' } : m)));
+    }
+  };
+
+  // Voice recording controls
+  const startVoiceRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioStreamRef.current = stream;
+      audioChunksRef.current = [];
+
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
+      const rec = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = rec;
+
+      rec.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      rec.start(100);
+      setIsRecording(true);
+      setRecordingSeconds(0);
+
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((s) => s + 1);
+      }, 1000);
+    } catch (err) {
+      alert('Microphone access is required for voice notes.');
+    }
+  };
+
+  const stopVoiceRecording = () => {
+    if (!mediaRecorderRef.current) return;
+    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+
+    mediaRecorderRef.current.onstop = () => {
+      if (audioStreamRef.current) {
+        audioStreamRef.current.getTracks().forEach((t) => t.stop());
+        audioStreamRef.current = null;
+      }
+      const mime = mediaRecorderRef.current?.mimeType || 'audio/webm';
+      const blob = new Blob(audioChunksRef.current, { type: mime });
+      const voiceFile = new File([blob], `voice_${Date.now()}.webm`, { type: mime });
+
+      setIsRecording(false);
+      setRecordingSeconds(0);
+      audioChunksRef.current = [];
+
+      handleSendMessage('', voiceFile, false);
+    };
+
+    mediaRecorderRef.current.stop();
+  };
+
+  const cancelVoiceRecording = () => {
+    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    if (audioStreamRef.current) {
+      audioStreamRef.current.getTracks().forEach((t) => t.stop());
+      audioStreamRef.current = null;
+    }
+    setIsRecording(false);
+    setRecordingSeconds(0);
+    audioChunksRef.current = [];
+  };
+
+  // Toggle reaction with optimistic update
+  const handleToggleReaction = async (messageId: string, emoji: string) => {
+    let nextReactions: any[] = [];
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.id !== messageId) return m;
+        const current = m.reactions ? [...m.reactions] : [];
+        const idx = current.findIndex((r) => r.emoji === emoji);
+        if (idx !== -1) {
+          if (current[idx].has_reacted) {
+            if (current[idx].count <= 1) current.splice(idx, 1);
+            else {
+              current[idx] = {
+                ...current[idx],
+                count: current[idx].count - 1,
+                has_reacted: false,
+                user_ids: current[idx].user_ids.filter((id) => id !== currentUser.id),
+              };
+            }
+          } else {
+            current[idx] = {
+              ...current[idx],
+              count: current[idx].count + 1,
+              has_reacted: true,
+              user_ids: [...current[idx].user_ids, currentUser.id],
+            };
+          }
+        } else {
+          current.push({ emoji, count: 1, has_reacted: true, user_ids: [currentUser.id] });
+        }
+        nextReactions = current;
+        return { ...m, reactions: current };
+      })
+    );
+    updateCachedMessage(messageId, { reactions: nextReactions });
+
+    try {
+      await fetch('/api/chat/reactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message_id: messageId, emoji }),
+      });
+    } catch {}
+  };
+
+  // Toggle Star
+  const handleToggleStar = async (messageId: string) => {
+    let nextStarred = false;
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.id === messageId) {
+          nextStarred = !m.is_starred;
+          return { ...m, is_starred: nextStarred };
+        }
+        return m;
+      })
+    );
+    updateCachedMessage(messageId, { is_starred: nextStarred });
+
+    try {
+      await fetch('/api/chat/starred', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message_id: messageId }),
+      });
+    } catch {}
+  };
+
+  // Edit Message
+  const handleEditMessage = async (messageId: string, newContent: string) => {
+    setMessages((prev) =>
+      prev.map((m) => (m.id === messageId ? { ...m, content: newContent, is_edited: true } : m))
+    );
+    updateCachedMessage(messageId, { content: newContent, is_edited: true });
+
+    try {
+      await fetch('/api/chat/messages', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message_id: messageId, content: newContent }),
+      });
+    } catch {}
+  };
+
+  // Delete for Everyone
+  const handleDeleteMessage = async (messageId: string) => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === messageId
+          ? { ...m, is_deleted: true, content: 'This message was deleted', media_url: null, file_name: null }
+          : m
+      )
+    );
+    updateCachedMessage(messageId, {
+      is_deleted: true,
+      content: 'This message was deleted',
+      media_url: null,
+      file_name: null,
+    });
+
+    try {
+      await fetch(`/api/chat/messages?message_id=${messageId}`, { method: 'DELETE' });
+    } catch {}
+  };
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col h-full relative overflow-hidden bg-[#07080b]">
+      {/* Sticky Native Header */}
+      <header className="h-[calc(4rem+env(safe-area-inset-top,0px))] pt-[env(safe-area-inset-top,0px)] px-3 bg-[#07080b]/95 backdrop-blur-xl border-b border-white/10 flex items-center justify-between z-20 shrink-0 sticky top-0">
+        <div className="flex items-center gap-2.5 overflow-hidden">
+          {/* Back Button */}
+          <button
+            onClick={onBack}
+            className="p-2 -ml-1 rounded-full text-slate-300 hover:text-white active:bg-white/10 transition-colors touch-manipulation flex items-center justify-center shrink-0"
+            aria-label="Back to conversations"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+
+          {/* Recipient Avatar */}
+          <div className="relative shrink-0">
+            <div className="w-10 h-10 rounded-full bg-slate-800 border border-white/10 flex items-center justify-center font-bold text-sm text-brand-300 overflow-hidden shadow-sm">
+              {isSaved ? (
+                <div className="w-full h-full bg-gradient-to-tr from-amber-500 to-orange-600 flex items-center justify-center text-white">
+                  <Bookmark className="w-5 h-5" />
+                </div>
+              ) : isGroup ? (
+                <div className="w-full h-full bg-gradient-to-tr from-indigo-600 to-brand-600 flex items-center justify-center text-white">
+                  <Users className="w-5 h-5" />
+                </div>
+              ) : partner?.avatar_url ? (
+                <img src={partner.avatar_url} alt={chatTitle} className="w-full h-full object-cover" />
+              ) : (
+                chatTitle.slice(0, 2).toUpperCase()
+              )}
+            </div>
+
+            {!isGroup && !isSaved && isOnline && (
+              <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-emerald-400 border-2 border-[#07080b]" />
+            )}
+          </div>
+
+          {/* Title and Typing / Online Status */}
+          <div className="overflow-hidden">
+            <h2 className="text-xs font-bold text-white truncate flex items-center gap-1.5">
+              <span>{chatTitle}</span>
+              {partnerFounder && <FounderBadge size="sm" />}
+            </h2>
+
+            <p className="text-[10px] truncate flex items-center gap-1">
+              {typingUsernames.length > 0 ? (
+                <span className="text-brand-400 font-medium animate-pulse">
+                  {typingUsernames.join(', ')} typing...
+                </span>
+              ) : (
+                <span className={isOnline ? 'text-emerald-400 font-medium' : 'text-slate-400'}>
+                  {chatSubtitle}
+                </span>
+              )}
+            </p>
+          </div>
+        </div>
+      </header>
+
+      {/* Messages Feed Viewport */}
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3.5 py-4 space-y-1 chat-scroll-viewport overscroll-contain"
+      >
+        {isLoadingOlder && (
+          <div className="py-2 flex justify-center items-center gap-2 text-xs text-brand-400 animate-fadeIn">
+            <div className="w-3.5 h-3.5 border-2 border-brand-500/40 border-t-brand-400 rounded-full animate-spin" />
+            <span className="text-[11px] text-slate-400">Loading earlier messages...</span>
+          </div>
+        )}
+
+        {loading ? (
+          <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-3">
+            <div className="w-7 h-7 border-3 border-brand-500/30 border-t-brand-500 rounded-full animate-spin" />
+            <p className="text-xs">Loading local history...</p>
+          </div>
+        ) : messages.length === 0 ? (
+          <div className="h-full flex flex-col items-center justify-center text-center p-6 space-y-2">
+            <div className="w-12 h-12 rounded-2xl bg-brand-500/10 text-brand-400 flex items-center justify-center border border-brand-500/20">
+              <Bookmark className="w-6 h-6" />
+            </div>
+            <h3 className="text-sm font-bold text-white">
+              {isSaved ? 'Your Personal Vault' : 'No messages yet'}
+            </h3>
+            <p className="text-xs text-slate-400 max-w-xs">
+              {isSaved
+                ? 'Save voice notes, photos, or document links for quick access.'
+                : 'Say hello to start the conversation!'}
+            </p>
+          </div>
+        ) : (
+          messages.map((msg) => (
+            <div
+              key={msg.id}
+              onTouchStart={() => handleTouchStart(msg)}
+              onTouchEnd={handleTouchEnd}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setActionSheetMessage(msg);
+              }}
+            >
+              <MessageBubble
+                message={msg}
+                currentUserId={currentUser.id}
+                isGroup={isGroup}
+                theme={currentTheme}
+                onReply={(m) => setReplyingTo(m)}
+                onToggleReaction={handleToggleReaction}
+                onToggleStar={handleToggleStar}
+                onEditMessage={handleEditMessage}
+                onDeleteMessage={handleDeleteMessage}
+              />
+            </div>
+          ))
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Quoted Reply Banner */}
+      {replyingTo && (
+        <div className="px-4 py-2 bg-slate-900/95 border-t border-white/10 flex items-center justify-between text-xs animate-fadeIn shrink-0">
+          <div className="flex items-center gap-2 overflow-hidden">
+            <CornerDownRight className="w-3.5 h-3.5 text-brand-400 shrink-0" />
+            <div className="overflow-hidden">
+              <p className="text-[10px] font-bold text-brand-300">
+                Replying to {replyingTo.sender?.full_name || 'User'}
+              </p>
+              <p className="text-[10px] text-slate-400 truncate">
+                {replyingTo.content || (replyingTo.media_type === 'image' ? '📷 Photo' : '📎 Attachment')}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setReplyingTo(null)}
+            className="p-1 text-slate-400 hover:text-white touch-manipulation"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Bottom Message Input Bar */}
+      <div className="p-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom,0px))] bg-[#07080b]/95 backdrop-blur-2xl border-t border-white/10 shrink-0">
+        {isRecording ? (
+          <div className="flex items-center justify-between bg-rose-500/10 border border-rose-500/30 rounded-2xl px-4 py-2.5">
+            <div className="flex items-center gap-2 text-rose-400 text-xs font-mono font-bold animate-pulse">
+              <Mic className="w-4 h-4" />
+              <span>Recording: {recordingSeconds}s</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={cancelVoiceRecording}
+                className="px-3 py-1 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold touch-manipulation"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={stopVoiceRecording}
+                className="px-3 py-1 rounded-xl bg-rose-600 text-white text-xs font-semibold shadow-lg shadow-rose-600/30 touch-manipulation"
+              >
+                Send
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            {/* Attachment Button (+) */}
+            <button
+              onClick={() => setAttachmentSheetOpen(true)}
+              className="p-2 rounded-2xl bg-white/5 border border-white/10 text-slate-300 hover:text-white active:scale-95 transition-all touch-manipulation shrink-0"
+              title="Add attachment"
+              aria-label="Add attachment"
+            >
+              <Plus className="w-5 h-5" />
+            </button>
+
+            {/* Input Field */}
+            <div className="flex-1 bg-slate-900/90 border border-white/10 rounded-2xl px-3.5 py-2 focus-within:border-brand-500/80 transition-colors flex items-center">
+              <input
+                type="text"
+                value={text}
+                onChange={(e) => {
+                  setText(e.target.value);
+                  if (onTyping) onTyping();
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && text.trim()) {
+                    e.preventDefault();
+                    handleSendMessage(text.trim());
+                  }
+                }}
+                placeholder="Message..."
+                className="w-full bg-transparent text-xs text-white placeholder-slate-500 focus:outline-none"
+              />
+            </div>
+
+            {/* Send or Voice Record Button */}
+            {text.trim() ? (
+              <button
+                onClick={() => handleSendMessage(text.trim())}
+                className="p-2.5 rounded-2xl bg-gradient-to-r from-brand-600 to-indigo-600 text-white shadow-lg shadow-brand-500/25 active:scale-95 transition-transform touch-manipulation shrink-0"
+                aria-label="Send message"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            ) : (
+              <button
+                onClick={startVoiceRecording}
+                className="p-2.5 rounded-2xl bg-white/5 border border-white/10 text-slate-300 hover:text-white active:scale-95 transition-all touch-manipulation shrink-0"
+                aria-label="Record voice note"
+              >
+                <Mic className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Attachment Bottom Sheet */}
+      <MobileAttachmentSheet
+        isOpen={attachmentSheetOpen}
+        onClose={() => setAttachmentSheetOpen(false)}
+        onSelectFile={(file, isViewOnce) => {
+          handleSendMessage('', file, isViewOnce);
+        }}
+        onStartVoiceRecord={startVoiceRecording}
+      />
+
+      {/* Message Long-Press Action Bottom Sheet with Haptics */}
+      <MobileMessageActionSheet
+        isOpen={Boolean(actionSheetMessage)}
+        message={actionSheetMessage}
+        currentUserId={currentUser.id}
+        onClose={() => setActionSheetMessage(null)}
+        onReply={(m) => setReplyingTo(m)}
+        onToggleReaction={handleToggleReaction}
+        onToggleStar={handleToggleStar}
+        onEditMessage={handleEditMessage}
+        onDeleteMessage={handleDeleteMessage}
+      />
+    </div>
+  );
+}
