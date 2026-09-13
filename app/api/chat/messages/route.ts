@@ -94,6 +94,7 @@ export async function GET(request: NextRequest) {
 
     // Fetch all reactions for these messages
     let reactionsMap: { [msgId: string]: { [emoji: string]: { count: number; user_ids: string[]; has_reacted: boolean } } } = {};
+    const deletedForMeSet = new Set<string>();
 
     if (messageIds.length > 0) {
       const { data: rawReactions } = await supabaseAdmin
@@ -103,6 +104,17 @@ export async function GET(request: NextRequest) {
 
       if (rawReactions) {
         for (const r of rawReactions) {
+          // Check for "Delete for me" flag
+          if (r.emoji === '__deleted_for_me__' && r.user_id === user.id) {
+            deletedForMeSet.add(r.message_id);
+            continue;
+          }
+
+          // Ignore any internal system flags from emoji reaction aggregates
+          if (r.emoji.startsWith('__')) {
+            continue;
+          }
+
           if (!reactionsMap[r.message_id]) {
             reactionsMap[r.message_id] = {};
           }
@@ -123,9 +135,13 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // Filter out messages deleted for the current user
+    const visibleMessages = messageList.filter((m) => !deletedForMeSet.has(m.id));
+    const visibleMessageIds = visibleMessages.map((m) => m.id);
+
     // Hydrate reply_to messages
     const replyIds = Array.from(
-      new Set(messageList.filter((m) => m.reply_to_id).map((m) => m.reply_to_id as string))
+      new Set(visibleMessages.filter((m) => m.reply_to_id).map((m) => m.reply_to_id as string))
     );
 
     let repliesMap: { [id: string]: any } = {};
@@ -152,12 +168,12 @@ export async function GET(request: NextRequest) {
 
     // Hydrate starred status for the current user
     let starredSet = new Set<string>();
-    if (messageIds.length > 0) {
+    if (visibleMessageIds.length > 0) {
       const { data: userStarred } = await supabaseAdmin
         .from('starred_messages')
         .select('message_id')
         .eq('user_id', user.id)
-        .in('message_id', messageIds);
+        .in('message_id', visibleMessageIds);
 
       if (userStarred) {
         for (const s of userStarred) {
@@ -167,7 +183,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Format output
-    const hydratedMessages = messageList.map((m) => {
+    const hydratedMessages = visibleMessages.map((m) => {
       const msgReactions = reactionsMap[m.id]
         ? Object.entries(reactionsMap[m.id]).map(([emoji, data]) => ({
             emoji,
@@ -382,7 +398,7 @@ export async function PATCH(request: NextRequest) {
   }
 }
 
-// "Delete for Everyone" (Soft delete: updates is_deleted = true, clears media)
+// Message Deletion: Supports "Delete for me" (type=me) and "Delete for everyone" (type=everyone)
 export async function DELETE(request: NextRequest) {
   try {
     const supabase = createServerSupabase();
@@ -396,6 +412,7 @@ export async function DELETE(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const messageId = searchParams.get('message_id');
+    const deleteType = searchParams.get('type') || 'everyone'; // 'me' | 'everyone'
 
     if (!messageId) {
       return NextResponse.json({ error: 'message_id is required' }, { status: 400 });
@@ -412,7 +429,41 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Message not found' }, { status: 404 });
     }
 
-    // Check if user is author or super admin
+    // Verify user is a participant of the conversation
+    const { data: participation } = await supabaseAdmin
+      .from('conversation_participants')
+      .select('user_id')
+      .eq('conversation_id', msg.conversation_id)
+      .eq('user_id', user.id)
+      .maybeSingle();
+
+    if (!participation) {
+      return NextResponse.json({ error: 'Forbidden: You are not in this conversation' }, { status: 403 });
+    }
+
+    // CASE 1: Delete for Me
+    if (deleteType === 'me') {
+      // Record persistent deletion flag in message_reactions
+      const { error: insErr } = await supabaseAdmin
+        .from('message_reactions')
+        .insert({
+          message_id: messageId,
+          user_id: user.id,
+          emoji: '__deleted_for_me__',
+        });
+
+      if (insErr && !insErr.message.includes('duplicate')) {
+        throw insErr;
+      }
+
+      return NextResponse.json({
+        success: true,
+        deleted_for_me: true,
+        messageId,
+      });
+    }
+
+    // CASE 2: Delete for Everyone (Author or Super Admin only)
     const { data: profile } = await supabaseAdmin
       .from('profiles')
       .select('is_admin')
@@ -423,7 +474,10 @@ export async function DELETE(request: NextRequest) {
     const isAdmin = profile?.is_admin === true;
 
     if (!isAuthor && !isAdmin) {
-      return NextResponse.json({ error: 'Unauthorized to delete this message' }, { status: 403 });
+      return NextResponse.json(
+        { error: 'Only the sender can delete this message for everyone.' },
+        { status: 403 }
+      );
     }
 
     // Mark as deleted for everyone and strip content and media
@@ -458,7 +512,7 @@ export async function DELETE(request: NextRequest) {
 
     if (delErr) throw delErr;
 
-    return NextResponse.json({ success: true, message: deleted });
+    return NextResponse.json({ success: true, message: deleted, deleted_for_everyone: true });
   } catch (err: any) {
     console.error('Delete message error:', err);
     return NextResponse.json({ error: err.message }, { status: 500 });

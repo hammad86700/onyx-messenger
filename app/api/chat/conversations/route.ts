@@ -71,13 +71,31 @@ export async function GET(request: NextRequest) {
 
     if (msgErr) throw msgErr;
 
+    // Fetch deleted_for_me flags for this user
+    const deletedForMeIds = new Set<string>();
+    const messageIds = (messages || []).map((m) => m.id);
+    if (messageIds.length > 0) {
+      const { data: myDeleted } = await supabaseAdmin
+        .from('message_reactions')
+        .select('message_id')
+        .eq('user_id', user.id)
+        .eq('emoji', '__deleted_for_me__')
+        .in('message_id', messageIds);
+
+      if (myDeleted) {
+        for (const d of myDeleted) {
+          deletedForMeIds.add(d.message_id);
+        }
+      }
+    }
+
     // Map participants, pinned status, and last message to each conversation
     const mappedConvs = (convs || []).map((conv) => {
       const participants = (allParticipants || []).filter(
         (p) => p.conversation_id === conv.id
       );
       const lastMessage = (messages || []).find(
-        (m) => m.conversation_id === conv.id
+        (m) => m.conversation_id === conv.id && !deletedForMeIds.has(m.id)
       );
       const myPart = participantRows.find((p) => p.conversation_id === conv.id);
 

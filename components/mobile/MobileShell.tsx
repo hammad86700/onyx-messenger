@@ -16,6 +16,15 @@ import ChangePasswordModal from '@/components/chat/ChangePasswordModal';
 import NewGroupModal from '@/components/chat/NewGroupModal';
 import { saveCachedMessage } from '@/lib/chat-cache';
 import { playReceiveSound } from '@/lib/sound';
+import { sendSystemNotification, requestNotificationPermission } from '@/lib/notifications';
+import { X } from 'lucide-react';
+
+interface FloatingBannerData {
+  conversationId: string;
+  senderName: string;
+  senderAvatar?: string | null;
+  snippet: string;
+}
 
 interface MobileShellProps {
   currentUser: Profile;
@@ -36,6 +45,7 @@ export default function MobileShell({
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [floatingBanner, setFloatingBanner] = useState<FloatingBannerData | null>(null);
 
   // Modals
   const [starredDrawerOpen, setStarredDrawerOpen] = useState(false);
@@ -49,11 +59,17 @@ export default function MobileShell({
   // Real-time channel ref
   const userChannelRef = useRef<any>(null);
 
-  // Active conversation ref for event listeners
+  // Active conversation and conversations ref for real-time handlers
   const activeConversationRef = useRef<Conversation | null>(null);
+  const conversationsRef = useRef<Conversation[]>([]);
+
   useEffect(() => {
     activeConversationRef.current = activeConversation;
   }, [activeConversation]);
+
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
 
   // Load saved theme
   useEffect(() => {
@@ -103,14 +119,58 @@ export default function MobileShell({
       if (!newMsg || !newMsg.conversation_id) return;
 
       const isCurrentChat = activeConversationRef.current?.id === newMsg.conversation_id;
+      const isWindowFocused = typeof document !== 'undefined' && !document.hidden && document.hasFocus();
 
       // If this conversation is currently open, forward immediately to MobileActiveChat
       if (isCurrentChat) {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('onyx-incoming-message', { detail: newMsg }));
         }
-      } else if (newMsg.sender_id !== currentUser.id) {
+      }
+
+      // If message is from someone else:
+      if (newMsg.sender_id !== currentUser.id) {
         playReceiveSound();
+
+        // If tab is in background, minimized, or looking at another chat:
+        if (!isCurrentChat || !isWindowFocused) {
+          const targetConv = conversationsRef.current.find((c) => c.id === newMsg.conversation_id);
+          const senderProfile =
+            newMsg.sender ||
+            targetConv?.participants?.find((p) => p.user_id === newMsg.sender_id)?.profile;
+          const senderName =
+            senderProfile?.full_name ||
+            senderProfile?.username ||
+            (targetConv?.type === 'group' ? targetConv.name : 'New message') ||
+            'New message';
+          const senderAvatar =
+            senderProfile?.avatar_url ||
+            (targetConv?.type === 'group' ? targetConv.avatar_url : null);
+
+          let snippet = newMsg.content || '';
+          if (newMsg.media_type === 'image') snippet = '📷 Sent a photo';
+          else if (newMsg.media_type === 'voice') snippet = '🎤 Sent a voice message';
+          else if (newMsg.media_type === 'pdf' || newMsg.media_type === 'file') snippet = '📎 Sent an attachment';
+
+          // Trigger native OS / browser notification (Action Center / Notification Tray)
+          sendSystemNotification({
+            title: senderName,
+            body: snippet,
+            icon: senderAvatar || '/icon-192.png',
+            tag: `onyx-chat-${newMsg.conversation_id}`,
+            conversationId: newMsg.conversation_id,
+          });
+
+          // Also show Instagram-style In-App Dropdown Floating Banner if on feed or another chat
+          if (!isCurrentChat) {
+            setFloatingBanner({
+              conversationId: newMsg.conversation_id,
+              senderName,
+              senderAvatar,
+              snippet,
+            });
+          }
+        }
       }
 
       // Check if message belongs to one of user's conversations
@@ -200,6 +260,76 @@ export default function MobileShell({
     };
   }, [currentUser.id, supabase]);
 
+  // 3. Auto-dismiss in-app floating banner after 5s
+  useEffect(() => {
+    if (!floatingBanner) return;
+    const timer = setTimeout(() => {
+      setFloatingBanner(null);
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [floatingBanner]);
+
+  // 4. Background Service Worker & Custom Window Notification Clicks
+  useEffect(() => {
+    const handleServiceWorkerMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'NAVIGATE_CONVERSATION' && event.data?.conversationId) {
+        const target = conversationsRef.current.find((c) => c.id === event.data.conversationId);
+        if (target) {
+          handleSelectConversation(target);
+        } else {
+          fetchConversations();
+        }
+      }
+    };
+
+    const handleOpenConvEvent = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.conversationId) {
+        const target = conversationsRef.current.find((c) => c.id === detail.conversationId);
+        if (target) {
+          handleSelectConversation(target);
+        } else {
+          fetchConversations();
+        }
+      }
+    };
+
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
+    }
+    window.addEventListener('onyx-open-conversation', handleOpenConvEvent);
+
+    return () => {
+      if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
+      }
+      window.removeEventListener('onyx-open-conversation', handleOpenConvEvent);
+    };
+  }, []);
+
+  // 5. Activity Heartbeat every 45s to update presence & last_read_at in PostgreSQL
+  useEffect(() => {
+    const heartbeat = async () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      try {
+        await fetch('/api/users/heartbeat', { method: 'POST' });
+      } catch {}
+    };
+
+    heartbeat();
+    const interval = setInterval(heartbeat, 45000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // 6. Request notification permission on initial mount
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      if (Notification.permission === 'default') {
+        requestNotificationPermission().catch(() => {});
+      }
+    }
+  }, []);
+
   // Total unread count
   const totalUnreadCount = conversations.reduce(
     (acc, c) => acc + (c.unread_count || 0),
@@ -246,6 +376,46 @@ export default function MobileShell({
 
   return (
     <div className="flex-1 min-h-0 flex flex-col h-full w-full relative overflow-hidden">
+      {/* Floating Instagram/WhatsApp-style In-App Notification Banner */}
+      {floatingBanner && (
+        <div
+          onClick={() => {
+            const target = conversations.find((c) => c.id === floatingBanner.conversationId);
+            if (target) {
+              handleSelectConversation(target);
+            }
+            setFloatingBanner(null);
+          }}
+          className="absolute top-3 left-3 right-3 z-50 p-3 rounded-2xl bg-[#0f111a]/95 border border-white/20 shadow-2xl backdrop-blur-2xl flex items-center justify-between gap-3 animate-slideDown cursor-pointer touch-manipulation hover:bg-[#151824] transition-all ring-1 ring-white/10"
+        >
+          <div className="flex items-center gap-3 overflow-hidden">
+            <div className="w-10 h-10 rounded-full bg-slate-800 border border-brand-500/40 flex items-center justify-center font-bold text-xs text-brand-300 overflow-hidden shrink-0 shadow-md">
+              {floatingBanner.senderAvatar ? (
+                <img src={floatingBanner.senderAvatar} alt="" className="w-full h-full object-cover" />
+              ) : (
+                floatingBanner.senderName.slice(0, 2).toUpperCase()
+              )}
+            </div>
+            <div className="overflow-hidden">
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-bold text-white truncate">{floatingBanner.senderName}</span>
+                <span className="text-[10px] text-brand-400 font-medium">just now</span>
+              </div>
+              <p className="text-[11px] text-slate-300 truncate">{floatingBanner.snippet}</p>
+            </div>
+          </div>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setFloatingBanner(null);
+            }}
+            className="p-1 rounded-full text-slate-400 hover:text-white"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* View 1: Main Feed Screen */}
       <div className="flex-1 min-h-0 flex flex-col h-full overflow-hidden">
         {/* Header */}

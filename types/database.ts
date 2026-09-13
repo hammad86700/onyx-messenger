@@ -11,6 +11,7 @@ export interface Profile {
   bio?: string | null;
   custom_status?: string | null;
   is_banned?: boolean;
+  last_seen?: string | null;
 }
 
 export function isFounder(user?: { is_founder?: boolean; username?: string } | null): boolean {
@@ -80,6 +81,7 @@ export interface Message {
   reply_to?: Message | null;
   is_edited?: boolean;
   is_deleted?: boolean;
+  deleted_for_me?: boolean;
   file_name?: string | null;
   file_size?: number | null;
   view_once_viewed?: boolean | null;

@@ -13,10 +13,12 @@ import {
   saveCachedMessages,
   saveCachedMessage,
   updateCachedMessage,
+  deleteCachedMessage,
 } from '@/lib/chat-cache';
 import { resolveLocalMediaUrl } from '@/lib/media-cache';
 import { compressImage, isCompressibleImage } from '@/lib/image-compression';
 import { playSendSound, playReceiveSound } from '@/lib/sound';
+import { formatLastSeen } from '@/lib/utils';
 import {
   ArrowLeft,
   Search,
@@ -87,7 +89,8 @@ export default function MobileActiveChat({
   const isGroup = conversation.type === 'group';
   const isSaved = conversation.type === 'saved';
 
-  const partner = conversation.participants?.find((p) => p.user_id !== currentUser.id)?.profile;
+  const partnerParticipant = conversation.participants?.find((p) => p.user_id !== currentUser.id);
+  const partner = partnerParticipant?.profile;
   const partnerFounder = isFounder(partner);
   const isOnline = partner ? onlineUserIds.has(partner.id) : false;
 
@@ -97,13 +100,38 @@ export default function MobileActiveChat({
     ? conversation.name || 'Group Chat'
     : partner?.full_name || 'Chat';
 
+  const lastActiveTimestamp =
+    partnerParticipant?.last_read_at ||
+    partner?.last_seen ||
+    (conversation.last_message?.sender_id === partner?.id ? conversation.last_message?.created_at : null) ||
+    partner?.created_at;
+
   const chatSubtitle = isSaved
     ? 'Personal Cloud'
     : isGroup
     ? `${conversation.participants?.length || 0} members`
     : isOnline
     ? 'Online'
+    : lastActiveTimestamp
+    ? formatLastSeen(lastActiveTimestamp)
     : partner?.username ? `@${partner.username}` : 'Offline';
+
+  const lastTapRef = useRef<{ [msgId: string]: number }>({});
+  const handleMessageTap = (msg: Message) => {
+    const now = Date.now();
+    const last = lastTapRef.current[msg.id] || 0;
+    if (now - last < 320) {
+      handleToggleReaction(msg.id, '❤️');
+      try {
+        if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+          navigator.vibrate?.(25);
+        }
+      } catch {}
+      lastTapRef.current[msg.id] = 0;
+    } else {
+      lastTapRef.current[msg.id] = now;
+    }
+  };
 
   const combinedTypingUsers = Array.from(
     new Set([
@@ -893,34 +921,47 @@ export default function MobileActiveChat({
     } catch {}
   };
 
-  // Delete for Everyone with optimistic update and real-time broadcast
-  const handleDeleteMessage = async (messageId: string) => {
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.id === messageId
-          ? { ...m, is_deleted: true, content: 'This message was deleted', media_url: null, file_name: null }
-          : m
-      )
-    );
-    updateCachedMessage(messageId, {
-      is_deleted: true,
-      content: 'This message was deleted',
-      media_url: null,
-      file_name: null,
-    });
+  // Delete Message Handler: supports both "Delete for me" and "Delete for everyone"
+  const handleDeleteMessage = async (messageId: string, mode: 'me' | 'everyone' = 'everyone') => {
+    if (mode === 'me') {
+      // 1. Delete for Me: Instantly remove only from this user's view and cache
+      setMessages((prev) => prev.filter((m) => m.id !== messageId));
+      deleteCachedMessage(messageId);
 
-    // Broadcast deletion immediately to active room
-    if (activeChannelRef.current) {
-      activeChannelRef.current.send({
-        type: 'broadcast',
-        event: 'message_deleted',
-        payload: { messageId },
+      try {
+        await fetch(`/api/chat/messages?message_id=${messageId}&type=me`, { method: 'DELETE' });
+      } catch (err) {
+        console.warn('Failed to delete for me:', err);
+      }
+    } else {
+      // 2. Delete for Everyone: Soft delete for everyone & broadcast to room
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId
+            ? { ...m, is_deleted: true, content: 'This message was deleted', media_url: null, file_name: null }
+            : m
+        )
+      );
+      updateCachedMessage(messageId, {
+        is_deleted: true,
+        content: 'This message was deleted',
+        media_url: null,
+        file_name: null,
       });
-    }
 
-    try {
-      await fetch(`/api/chat/messages?message_id=${messageId}`, { method: 'DELETE' });
-    } catch {}
+      // Broadcast deletion immediately to active room
+      if (activeChannelRef.current) {
+        activeChannelRef.current.send({
+          type: 'broadcast',
+          event: 'message_deleted',
+          payload: { messageId },
+        });
+      }
+
+      try {
+        await fetch(`/api/chat/messages?message_id=${messageId}&type=everyone`, { method: 'DELETE' });
+      } catch {}
+    }
   };
 
   return (
@@ -972,8 +1013,13 @@ export default function MobileActiveChat({
                 <span className="text-brand-400 font-medium animate-pulse">
                   {combinedTypingUsers.join(', ')} typing...
                 </span>
+              ) : isOnline ? (
+                <span className="text-emerald-400 font-medium flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse inline-block" />
+                  Online
+                </span>
               ) : (
-                <span className={isOnline ? 'text-emerald-400 font-medium' : 'text-slate-400'}>
+                <span className="text-slate-400">
                   {chatSubtitle}
                 </span>
               )}
@@ -1018,6 +1064,7 @@ export default function MobileActiveChat({
           messages.map((msg) => (
             <div
               key={msg.id}
+              onClick={() => handleMessageTap(msg)}
               onTouchStart={() => handleTouchStart(msg)}
               onTouchEnd={handleTouchEnd}
               onContextMenu={(e) => {

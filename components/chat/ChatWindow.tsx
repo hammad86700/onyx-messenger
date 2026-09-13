@@ -14,6 +14,7 @@ import {
   saveCachedMessages,
   saveCachedMessage,
   updateCachedMessage,
+  deleteCachedMessage,
 } from '@/lib/chat-cache';
 import { compressImage, isCompressibleImage } from '@/lib/image-compression';
 import {
@@ -814,38 +815,50 @@ export default function ChatWindow({
     broadcastToRoom('message_edited', { messageId, content: newContent });
   };
 
-  // Delete for Everyone Handler
-  const handleDeleteMessage = async (messageId: string) => {
-    // Optimistic UI
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.id === messageId
-          ? {
-              ...m,
-              is_deleted: true,
-              content: 'This message was deleted',
-              media_url: null,
-              file_name: null,
-            }
-          : m
-      )
-    );
-    updateCachedMessage(messageId, {
-      is_deleted: true,
-      content: 'This message was deleted',
-      media_url: null,
-      file_name: null,
-    });
+  // Delete Message Handler: supports both 'me' and 'everyone'
+  const handleDeleteMessage = async (messageId: string, mode: 'me' | 'everyone' = 'everyone') => {
+    if (mode === 'me') {
+      setMessages((prev) => prev.filter((m) => m.id !== messageId));
+      deleteCachedMessage(messageId);
+      try {
+        await fetch(`/api/chat/messages?message_id=${messageId}&type=me`, {
+          method: 'DELETE',
+        });
+      } catch (err) {
+        console.warn('Failed to delete for me:', err);
+      }
+    } else {
+      // Optimistic UI
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId
+            ? {
+                ...m,
+                is_deleted: true,
+                content: 'This message was deleted',
+                media_url: null,
+                file_name: null,
+              }
+            : m
+        )
+      );
+      updateCachedMessage(messageId, {
+        is_deleted: true,
+        content: 'This message was deleted',
+        media_url: null,
+        file_name: null,
+      });
 
-    const res = await fetch(`/api/chat/messages?message_id=${messageId}`, {
-      method: 'DELETE',
-    });
+      const res = await fetch(`/api/chat/messages?message_id=${messageId}&type=everyone`, {
+        method: 'DELETE',
+      });
 
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
 
-    // Instant WebSocket broadcast deletion
-    broadcastToRoom('message_deleted', { messageId });
+      // Instant WebSocket broadcast deletion
+      broadcastToRoom('message_deleted', { messageId });
+    }
   };
 
   // View-Once Media Opened Handler

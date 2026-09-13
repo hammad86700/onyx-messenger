@@ -1,6 +1,7 @@
 {
   "/_not-found/page": "app/_not-found/page.js",
   "/admin/page": "app/admin/page.js",
+  "/api/admin/announcement/route": "app/api/admin/announcement/route.js",
   "/api/admin/ban-user/route": "app/api/admin/ban-user/route.js",
   "/api/admin/delete-user/route": "app/api/admin/delete-user/route.js",
   "/api/admin/generate-reset-token/route": "app/api/admin/generate-reset-token/route.js",
@@ -8,9 +9,9 @@
   "/api/admin/toggle-admin/route": "app/api/admin/toggle-admin/route.js",
   "/api/auth/admin-emergency-reset/route": "app/api/auth/admin-emergency-reset/route.js",
   "/api/auth/change-password/route": "app/api/auth/change-password/route.js",
-  "/api/admin/announcement/route": "app/api/admin/announcement/route.js",
   "/api/auth/forgot-password/route": "app/api/auth/forgot-password/route.js",
   "/api/auth/login/route": "app/api/auth/login/route.js",
+  "/api/auth/logout/route": "app/api/auth/logout/route.js",
   "/api/auth/register/route": "app/api/auth/register/route.js",
   "/api/auth/reset-password/route": "app/api/auth/reset-password/route.js",
   "/api/auth/validate-reset-token/route": "app/api/auth/validate-reset-token/route.js",
@@ -19,9 +20,10 @@
   "/api/chat/conversations/saved/route": "app/api/chat/conversations/saved/route.js",
   "/api/chat/messages/route": "app/api/chat/messages/route.js",
   "/api/chat/messages/view-once/route": "app/api/chat/messages/view-once/route.js",
+  "/api/chat/reactions/route": "app/api/chat/reactions/route.js",
   "/api/chat/starred/route": "app/api/chat/starred/route.js",
   "/api/chat/upload/route": "app/api/chat/upload/route.js",
-  "/api/chat/reactions/route": "app/api/chat/reactions/route.js",
+  "/api/users/heartbeat/route": "app/api/users/heartbeat/route.js",
   "/api/users/profile/route": "app/api/users/profile/route.js",
   "/api/users/search/route": "app/api/users/search/route.js",
   "/forgot-password/page": "app/forgot-password/page.js",
@@ -29,6 +31,5 @@
   "/page": "app/page.js",
   "/register/page": "app/register/page.js",
   "/reset-password/page": "app/reset-password/page.js",
-  "/settings/page": "app/settings/page.js",
-  "/api/auth/logout/route": "app/api/auth/logout/route.js"
+  "/settings/page": "app/settings/page.js"
 }

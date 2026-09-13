@@ -38,7 +38,7 @@ interface MessageBubbleProps {
   onToggleReaction?: (messageId: string, emoji: string) => void;
   onToggleStar?: (messageId: string) => void;
   onEditMessage?: (messageId: string, newContent: string) => Promise<void>;
-  onDeleteMessage?: (messageId: string) => Promise<void>;
+  onDeleteMessage?: (messageId: string, mode?: 'me' | 'everyone') => Promise<void> | void;
   onViewOnceOpened?: (messageId: string) => void;
   scrollToMessage?: (messageId: string) => void;
 }
@@ -63,6 +63,25 @@ export default function MessageBubble({
 
   // Modals & Floating Menus
   const [imageModalOpen, setImageModalOpen] = useState(false);
+  const [showDeleteChoices, setShowDeleteChoices] = useState(false);
+  const lastTapRef = useRef<number>(0);
+
+  const handleBubbleClick = () => {
+    const now = Date.now();
+    if (now - lastTapRef.current < 320) {
+      if (onToggleReaction) {
+        onToggleReaction(message.id, '❤️');
+      }
+      try {
+        if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+          navigator.vibrate?.(25);
+        }
+      } catch {}
+      lastTapRef.current = 0;
+    } else {
+      lastTapRef.current = now;
+    }
+  };
   const [showReactionPicker, setShowReactionPicker] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content || '');
@@ -315,6 +334,7 @@ export default function MessageBubble({
 
         {/* Bubble container with Theme Gradients */}
         <div
+          onClick={handleBubbleClick}
           className={`relative rounded-2xl p-3 shadow-md transition-all message-bubble touch-manipulation min-w-0 max-w-full overflow-hidden ${
             message.is_deleted
               ? 'bg-slate-900/60 border border-white/5 text-slate-400 italic'
@@ -651,17 +671,13 @@ export default function MessageBubble({
                 </button>
               )}
 
-              {/* Delete for Everyone */}
-              {onDeleteMessage && (isMine || isGroup) && (
+              {/* Delete Message Button */}
+              {onDeleteMessage && (
                 <button
                   type="button"
-                  onClick={() => {
-                    if (confirm('Delete this message for everyone?')) {
-                      onDeleteMessage(message.id);
-                    }
-                  }}
+                  onClick={() => setShowDeleteChoices(true)}
                   className="p-1.5 rounded-full hover:bg-slate-800 text-slate-400 hover:text-rose-400 transition-colors"
-                  title="Delete for everyone"
+                  title={isMine ? "Delete message" : "Delete for me"}
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
@@ -790,6 +806,66 @@ export default function MessageBubble({
               alt="Full size preview"
               className="max-h-[85vh] max-w-full rounded-2xl object-contain shadow-2xl border border-white/10"
             />
+          </div>
+        </div>
+      )}
+      {/* Delete Choice Modal */}
+      {showDeleteChoices && (
+        <div
+          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn"
+          onClick={() => setShowDeleteChoices(false)}
+        >
+          <div
+            className="w-full max-w-xs bg-[#0e1017] border border-white/10 rounded-3xl p-5 shadow-2xl space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-center">
+              <h3 className="text-sm font-bold text-white">Delete message?</h3>
+              <p className="text-[11px] text-slate-400 mt-1">
+                {isMine
+                  ? 'Choose how you want to delete this message'
+                  : 'Remove this message from your chat history'}
+              </p>
+            </div>
+
+            <div className="space-y-1.5 pt-1">
+              <button
+                onClick={() => {
+                  if (onDeleteMessage) onDeleteMessage(message.id, 'me');
+                  setShowDeleteChoices(false);
+                }}
+                className="w-full py-2.5 px-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white border border-white/10 text-xs font-semibold text-left flex items-center justify-between"
+              >
+                <div>
+                  <div>Delete for me</div>
+                  <div className="text-[10px] text-slate-400 font-normal">Hides only for you</div>
+                </div>
+                <Trash2 className="w-3.5 h-3.5 text-slate-400" />
+              </button>
+
+              {isMine && (
+                <button
+                  onClick={() => {
+                    if (onDeleteMessage) onDeleteMessage(message.id, 'everyone');
+                    setShowDeleteChoices(false);
+                  }}
+                  className="w-full py-2.5 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 text-xs font-semibold text-left flex items-center justify-between"
+                >
+                  <div>
+                    <div className="text-rose-400">Delete for everyone</div>
+                    <div className="text-[10px] text-rose-300/70 font-normal">Removes for all participants</div>
+                  </div>
+                  <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                </button>
+              )}
+
+              <button
+                onClick={() => setShowDeleteChoices(false)}
+                className="w-full py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-medium transition-colors mt-2"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}

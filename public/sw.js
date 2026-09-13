@@ -47,3 +47,33 @@ self.addEventListener('fetch', (event) => {
       })
   );
 });
+
+// Handle Notification Clicks to focus or open Onyx chat
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const data = event.notification.data || {};
+  const conversationId = data.conversationId;
+
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      // If a window is already open, focus it and notify of target conversation
+      for (const client of clientList) {
+        if ('focus' in client) {
+          client.focus();
+          if (conversationId) {
+            client.postMessage({
+              type: 'NAVIGATE_CONVERSATION',
+              conversationId: conversationId,
+            });
+          }
+          return;
+        }
+      }
+      // If no window is open, open a new one
+      if (self.clients.openWindow) {
+        return self.clients.openWindow(data.url || '/');
+      }
+    })
+  );
+});
+

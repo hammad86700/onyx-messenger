@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Conversation, Profile, isFounder } from '@/types/database';
-import { formatMessageTime } from '@/lib/utils';
+import { formatMessageTime, formatLastSeen } from '@/lib/utils';
 import FounderBadge from '@/components/chat/FounderBadge';
 import {
   Search,
@@ -178,7 +178,7 @@ export default function MobileChatList({
                           )}
                         </div>
                         {isOnline && (
-                          <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-[#07080b]" />
+                          <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-[#07080b] shadow-sm shadow-emerald-500/50 animate-pulse" />
                         )}
                       </div>
 
@@ -187,7 +187,15 @@ export default function MobileChatList({
                           <span className="text-xs font-bold text-white truncate">{user.full_name}</span>
                           {userFounder && <FounderBadge size="sm" />}
                         </div>
-                        <p className="text-[11px] text-brand-400 font-mono truncate">@{user.username}</p>
+                        <p className="text-[11px] text-slate-400 font-mono truncate flex items-center gap-1">
+                          <span>@{user.username}</span>
+                          <span className="text-slate-600">•</span>
+                          {isOnline ? (
+                            <span className="text-emerald-400 font-sans font-medium">Online</span>
+                          ) : (
+                            <span className="text-slate-500 font-sans">{formatLastSeen(user.created_at)}</span>
+                          )}
+                        </p>
                       </div>
                     </div>
 
@@ -268,7 +276,7 @@ export default function MobileChatList({
                   </div>
 
                   {!isGroup && !isSaved && isOnline && (
-                    <span className="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full bg-emerald-400 border-2 border-[#07080b]" />
+                    <span className="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full bg-emerald-400 border-2 border-[#07080b] shadow-sm shadow-emerald-500/50 animate-pulse" />
                   )}
                 </div>
 

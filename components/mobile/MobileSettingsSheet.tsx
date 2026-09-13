@@ -16,7 +16,13 @@ import {
   Check,
   Download,
   KeyRound,
+  Bell,
 } from 'lucide-react';
+import {
+  getNotificationPermission,
+  requestNotificationPermission,
+  sendTestNotification,
+} from '@/lib/notifications';
 
 interface MobileSettingsSheetProps {
   currentUser: Profile;
@@ -45,6 +51,23 @@ export default function MobileSettingsSheet({
   onChangePassword,
 }: MobileSettingsSheetProps) {
   const isUserFounder = isFounder(currentUser);
+  const [permission, setPermission] = React.useState<string>('default');
+  const [testing, setTesting] = React.useState(false);
+
+  React.useEffect(() => {
+    setPermission(getNotificationPermission());
+  }, []);
+
+  const handleRequestPermission = async () => {
+    const granted = await requestNotificationPermission();
+    setPermission(granted ? 'granted' : 'denied');
+  };
+
+  const handleTestAlert = async () => {
+    setTesting(true);
+    await sendTestNotification();
+    setTimeout(() => setTesting(false), 800);
+  };
 
   return (
     <div className="h-full w-full overflow-y-auto overflow-x-hidden px-3.5 pt-3 pb-28 space-y-3.5 bg-[#07080b] chat-scroll-viewport">
@@ -77,6 +100,7 @@ export default function MobileSettingsSheet({
           </div>
         </div>
 
+        {/* Action Buttons: Edit Profile & Password */}
         <div className="grid grid-cols-2 gap-2 mt-3.5">
           {onEditProfile && (
             <button
@@ -97,6 +121,59 @@ export default function MobileSettingsSheet({
               <span>Password</span>
             </button>
           )}
+        </div>
+      </div>
+
+      {/* Push Notifications Setting Card */}
+      <div className="p-3.5 rounded-3xl bg-slate-900/80 border border-white/10 shadow-xl backdrop-blur-xl shrink-0 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-brand-500/20 text-brand-400 flex items-center justify-center border border-brand-500/30">
+              <Bell className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="text-xs font-bold text-white">Push Notifications</h3>
+              <p className="text-[10px] text-slate-400">Alerts when you receive messages</p>
+            </div>
+          </div>
+
+          <span
+            className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+              permission === 'granted'
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                : permission === 'denied'
+                ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+            }`}
+          >
+            {permission === 'granted' ? 'Active' : permission === 'denied' ? 'Blocked' : 'Off'}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 pt-1">
+          {permission !== 'granted' ? (
+            <button
+              onClick={handleRequestPermission}
+              className="py-2.5 px-3 rounded-xl bg-brand-600 hover:bg-brand-500 active:scale-95 text-xs font-semibold text-white transition-all shadow-md shadow-brand-600/30 flex items-center justify-center gap-1.5 touch-manipulation"
+            >
+              <Bell className="w-3.5 h-3.5" />
+              <span>Enable Alerts</span>
+            </button>
+          ) : (
+            <div className="py-2.5 px-3 rounded-xl bg-white/5 border border-white/10 text-xs font-semibold text-slate-300 flex items-center justify-center gap-1.5">
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Enabled</span>
+            </div>
+          )}
+
+          <button
+            onClick={handleTestAlert}
+            disabled={testing}
+            className="py-2.5 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-semibold text-slate-200 border border-white/10 transition-colors flex items-center justify-center gap-1.5 touch-manipulation active:scale-95 disabled:opacity-50"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+            <span>{testing ? 'Sending...' : 'Test Alert'}</span>
+          </button>
         </div>
       </div>
 

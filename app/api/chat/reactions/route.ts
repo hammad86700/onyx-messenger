@@ -54,6 +54,7 @@ export async function POST(request: NextRequest) {
     let reactionsMap: { [e: string]: { count: number; user_ids: string[]; has_reacted: boolean } } = {};
     if (rawReactions) {
       for (const r of rawReactions) {
+        if (r.emoji.startsWith('__')) continue;
         if (!reactionsMap[r.emoji]) {
           reactionsMap[r.emoji] = { count: 0, user_ids: [], has_reacted: false };
         }

@@ -67,3 +67,48 @@ export function formatFileSize(bytes?: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+export function formatLastSeen(dateString?: string | null): string {
+  if (!dateString) return "Offline";
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+
+  if (isNaN(date.getTime()) || diffMs < 0) return "Active just now";
+
+  // Less than 1 minute
+  if (diffMs < 60 * 1000) {
+    return "Active just now";
+  }
+
+  // Less than 60 minutes
+  if (diffMs < 60 * 60 * 1000) {
+    const mins = Math.floor(diffMs / (60 * 1000));
+    return `Last seen ${mins}m ago`;
+  }
+
+  const isToday =
+    date.getDate() === now.getDate() &&
+    date.getMonth() === now.getMonth() &&
+    date.getFullYear() === now.getFullYear();
+
+  const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  if (isToday) {
+    return `Last seen today at ${timeStr}`;
+  }
+
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const isYesterday =
+    date.getDate() === yesterday.getDate() &&
+    date.getMonth() === yesterday.getMonth() &&
+    date.getFullYear() === yesterday.getFullYear();
+
+  if (isYesterday) {
+    return `Last seen yesterday at ${timeStr}`;
+  }
+
+  return `Last seen ${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} at ${timeStr}`;
+}
+
