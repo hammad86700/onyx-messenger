@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Conversation, Message, Profile, OnyxTheme, isFounder } from '@/types/database';
+import { createClient } from '@/lib/supabase/client';
 import FounderBadge from '@/components/chat/FounderBadge';
 import MessageBubble from '@/components/chat/MessageBubble';
 import MobileAttachmentSheet from './MobileAttachmentSheet';
@@ -50,14 +51,24 @@ export default function MobileActiveChat({
   onBroadcastMessage,
   currentTheme = 'onyx-pure',
 }: MobileActiveChatProps) {
+  const supabase = createClient();
+  const activeChannelRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isLoadingOlderRef = useRef(false);
 
   const [messages, setMessages] = useState<Message[]>([]);
+  const messagesRef = useRef<Message[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
   const [loading, setLoading] = useState(true);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const [hasMoreOlder, setHasMoreOlder] = useState(true);
+
+  // Local typing indicators from Realtime Broadcast
+  const [localTypingMap, setLocalTypingMap] = useState<{ [userId: string]: string }>({});
 
   // Input & Reply State
   const [text, setText] = useState('');
@@ -93,6 +104,32 @@ export default function MobileActiveChat({
     : isOnline
     ? 'Online'
     : partner?.username ? `@${partner.username}` : 'Offline';
+
+  const combinedTypingUsers = Array.from(
+    new Set([
+      ...Object.values(localTypingMap).filter(Boolean),
+      ...(typingUsernames || []).filter(Boolean),
+    ])
+  );
+
+  const lastTypingPingRef = useRef<number>(0);
+  const handleTyping = useCallback(() => {
+    const now = Date.now();
+    if (now - lastTypingPingRef.current > 1500) {
+      lastTypingPingRef.current = now;
+      if (activeChannelRef.current) {
+        activeChannelRef.current.send({
+          type: 'broadcast',
+          event: 'typing',
+          payload: {
+            userId: currentUser.id,
+            username: currentUser.username || currentUser.full_name || 'User',
+          },
+        });
+      }
+    }
+    if (onTyping) onTyping();
+  }, [currentUser, onTyping]);
 
   const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
     messagesEndRef.current?.scrollIntoView({ behavior });
@@ -182,6 +219,287 @@ export default function MobileActiveChat({
       isMounted = false;
     };
   }, [conversation.id]);
+
+  // 2. Real-Time Channel: Broadcast & Postgres Changes (Sub-second instant delivery)
+  useEffect(() => {
+    const channelName = `chat-room:${conversation.id}`;
+    const channel = supabase.channel(channelName, {
+      config: {
+        broadcast: { ack: false },
+      },
+    });
+
+    activeChannelRef.current = channel;
+
+    // 1. WebSocket Broadcast: Instant peer-to-peer delivery (<50ms)
+    channel.on('broadcast', { event: 'new_message' }, async (payload) => {
+      const incoming = payload.payload as Message;
+      if (!incoming || incoming.conversation_id !== conversation.id) return;
+      if (incoming.sender_id === currentUser.id) return;
+
+      let displayMsg = incoming;
+      if (incoming.media_url) {
+        try {
+          const localUrl = await resolveLocalMediaUrl(incoming.id, incoming.media_url);
+          if (localUrl) displayMsg = { ...incoming, media_url: localUrl };
+        } catch {}
+      }
+
+      playReceiveSound();
+
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === incoming.id)) return prev;
+        return [...prev, { ...displayMsg, status: 'sent' }];
+      });
+
+      saveCachedMessage(displayMsg);
+      setTimeout(() => scrollToBottom('smooth'), 50);
+    });
+
+    // 2. WebSocket Broadcast: Message Edited
+    channel.on('broadcast', { event: 'message_edited' }, (payload) => {
+      const { messageId, content } = payload.payload || {};
+      if (!messageId) return;
+      setMessages((prev) =>
+        prev.map((m) => (m.id === messageId ? { ...m, content, is_edited: true } : m))
+      );
+      updateCachedMessage(messageId, { content, is_edited: true });
+    });
+
+    // 3. WebSocket Broadcast: Message Deleted
+    channel.on('broadcast', { event: 'message_deleted' }, (payload) => {
+      const { messageId } = payload.payload || {};
+      if (!messageId) return;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId
+            ? {
+                ...m,
+                is_deleted: true,
+                content: 'This message was deleted',
+                media_url: null,
+                file_name: null,
+              }
+            : m
+        )
+      );
+      updateCachedMessage(messageId, {
+        is_deleted: true,
+        content: 'This message was deleted',
+        media_url: null,
+        file_name: null,
+      });
+    });
+
+    // 4. WebSocket Broadcast: Reaction Update
+    channel.on('broadcast', { event: 'reaction_update' }, (payload) => {
+      const { messageId, reactions } = payload.payload || {};
+      if (!messageId) return;
+      setMessages((prev) =>
+        prev.map((m) => (m.id === messageId ? { ...m, reactions } : m))
+      );
+      updateCachedMessage(messageId, { reactions });
+    });
+
+    // 5. WebSocket Broadcast: Typing Indicator
+    channel.on('broadcast', { event: 'typing' }, (payload) => {
+      const { userId, username } = payload.payload || {};
+      if (!userId || userId === currentUser.id) return;
+      setLocalTypingMap((prev) => ({ ...prev, [userId]: username || 'Someone' }));
+      setTimeout(() => {
+        setLocalTypingMap((prev) => {
+          const next = { ...prev };
+          delete next[userId];
+          return next;
+        });
+      }, 2500);
+    });
+
+    // 6. Postgres Changes on messages table
+    channel.on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'messages',
+        filter: `conversation_id=eq.${conversation.id}`,
+      },
+      async (payload) => {
+        if (payload.eventType === 'INSERT') {
+          const incoming = payload.new as Message;
+          if (!incoming) return;
+
+          // Fetch sender profile if missing
+          if (!incoming.sender) {
+            try {
+              const { data: senderProf } = await supabase
+                .from('profiles')
+                .select('*')
+                .eq('id', incoming.sender_id)
+                .maybeSingle();
+              if (senderProf) incoming.sender = senderProf;
+            } catch {}
+          }
+
+          let displayMsg = incoming;
+          if (incoming.media_url) {
+            try {
+              const localUrl = await resolveLocalMediaUrl(incoming.id, incoming.media_url);
+              if (localUrl) displayMsg = { ...incoming, media_url: localUrl };
+            } catch {}
+          }
+
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === incoming.id)) return prev;
+
+            // Replace matching optimistic message
+            const tempIdx = prev.findIndex(
+              (m) =>
+                (m.status === 'sending' || m.id.startsWith('temp-')) &&
+                m.sender_id === incoming.sender_id &&
+                m.content === incoming.content
+            );
+
+            if (tempIdx !== -1) {
+              const updated = [...prev];
+              updated[tempIdx] = { ...displayMsg, status: 'sent' };
+              return updated;
+            }
+
+            if (incoming.sender_id !== currentUser.id) {
+              playReceiveSound();
+            }
+
+            return [...prev, { ...displayMsg, status: 'sent' }];
+          });
+
+          saveCachedMessage(displayMsg);
+          setTimeout(() => scrollToBottom('smooth'), 50);
+        } else if (payload.eventType === 'UPDATE') {
+          const updatedMsg = payload.new as Message;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === updatedMsg.id ? { ...m, ...updatedMsg } : m))
+          );
+          updateCachedMessage(updatedMsg.id, updatedMsg);
+        }
+      }
+    );
+
+    channel.subscribe();
+
+    return () => {
+      activeChannelRef.current = null;
+      supabase.removeChannel(channel);
+    };
+  }, [conversation.id, currentUser.id, supabase]);
+
+  // 3. Cross-component Event Bridge (Incoming messages routed via MobileShell)
+  useEffect(() => {
+    const handleOnyxIncoming = async (e: Event) => {
+      const customEvent = e as CustomEvent<Message>;
+      const incoming = customEvent.detail;
+      if (!incoming || incoming.conversation_id !== conversation.id) return;
+
+      let displayMsg = incoming;
+      if (incoming.media_url) {
+        try {
+          const localUrl = await resolveLocalMediaUrl(incoming.id, incoming.media_url);
+          if (localUrl) displayMsg = { ...incoming, media_url: localUrl };
+        } catch {}
+      }
+
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === incoming.id)) return prev;
+
+        const tempIdx = prev.findIndex(
+          (m) =>
+            (m.status === 'sending' || m.id.startsWith('temp-')) &&
+            m.sender_id === incoming.sender_id &&
+            m.content === incoming.content
+        );
+
+        if (tempIdx !== -1) {
+          const updated = [...prev];
+          updated[tempIdx] = { ...displayMsg, status: 'sent' };
+          return updated;
+        }
+
+        if (incoming.sender_id !== currentUser.id) {
+          playReceiveSound();
+        }
+
+        return [...prev, { ...displayMsg, status: 'sent' }];
+      });
+
+      saveCachedMessage(displayMsg);
+      setTimeout(() => scrollToBottom('smooth'), 50);
+    };
+
+    window.addEventListener('onyx-incoming-message', handleOnyxIncoming);
+    return () => {
+      window.removeEventListener('onyx-incoming-message', handleOnyxIncoming);
+    };
+  }, [conversation.id, currentUser.id]);
+
+  // 4. Adaptive Active-Chat Delta Sync Loop (High-frequency background fail-safe)
+  useEffect(() => {
+    let isMounted = true;
+
+    const deltaSyncInterval = setInterval(async () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (!messagesRef.current || messagesRef.current.length === 0) return;
+
+      const confirmed = messagesRef.current.filter(
+        (m) => !m.id.startsWith('temp-') && m.created_at
+      );
+      if (confirmed.length === 0) return;
+      const latestTs = confirmed[confirmed.length - 1].created_at;
+
+      try {
+        const res = await fetch(
+          `/api/chat/messages?conversation_id=${conversation.id}&after=${encodeURIComponent(latestTs)}`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (isMounted && data.messages && data.messages.length > 0) {
+          const freshMessages: Message[] = data.messages;
+
+          const resolvedFresh = await Promise.all(
+            freshMessages.map(async (m) => {
+              if (m.media_url) {
+                const localUrl = await resolveLocalMediaUrl(m.id, m.media_url);
+                return { ...m, media_url: localUrl || m.media_url };
+              }
+              return m;
+            })
+          );
+
+          setMessages((prev) => {
+            const existingIds = new Set(prev.map((m) => m.id));
+            const newArrivals = resolvedFresh.filter((m) => !existingIds.has(m.id));
+            if (newArrivals.length === 0) return prev;
+
+            const hasOther = newArrivals.some((m) => m.sender_id !== currentUser.id);
+            if (hasOther) {
+              playReceiveSound();
+            }
+
+            saveCachedMessages(conversation.id, newArrivals);
+            setTimeout(() => scrollToBottom('smooth'), 50);
+            return [...prev, ...newArrivals];
+          });
+        }
+      } catch {
+        // Silently recover on next cycle
+      }
+    }, 1500);
+
+    return () => {
+      isMounted = false;
+      clearInterval(deltaSyncInterval);
+    };
+  }, [conversation.id, currentUser.id]);
 
   // Cursor-Based Pagination on Scroll Top (scrollTop < 80px)
   const handleScroll = async () => {
@@ -393,6 +711,15 @@ export default function MobileActiveChat({
       setMessages((prev) => prev.map((m) => (m.id === tempId ? confirmed : m)));
       saveCachedMessage(confirmed);
 
+      // Instant peer-to-peer WebSocket broadcast to active room (<50ms delivery)
+      if (activeChannelRef.current) {
+        activeChannelRef.current.send({
+          type: 'broadcast',
+          event: 'new_message',
+          payload: confirmed,
+        });
+      }
+
       if (onBroadcastMessage) onBroadcastMessage(confirmed);
     } catch (err) {
       console.error('Send error:', err);
@@ -464,7 +791,7 @@ export default function MobileActiveChat({
     audioChunksRef.current = [];
   };
 
-  // Toggle reaction with optimistic update
+  // Toggle reaction with optimistic update and real-time broadcast
   const handleToggleReaction = async (messageId: string, emoji: string) => {
     let nextReactions: any[] = [];
     setMessages((prev) =>
@@ -500,6 +827,15 @@ export default function MobileActiveChat({
     );
     updateCachedMessage(messageId, { reactions: nextReactions });
 
+    // Broadcast reaction update immediately to active room
+    if (activeChannelRef.current) {
+      activeChannelRef.current.send({
+        type: 'broadcast',
+        event: 'reaction_update',
+        payload: { messageId, reactions: nextReactions },
+      });
+    }
+
     try {
       await fetch('/api/chat/reactions', {
         method: 'POST',
@@ -532,12 +868,21 @@ export default function MobileActiveChat({
     } catch {}
   };
 
-  // Edit Message
+  // Edit Message with optimistic update and real-time broadcast
   const handleEditMessage = async (messageId: string, newContent: string) => {
     setMessages((prev) =>
       prev.map((m) => (m.id === messageId ? { ...m, content: newContent, is_edited: true } : m))
     );
     updateCachedMessage(messageId, { content: newContent, is_edited: true });
+
+    // Broadcast edit immediately to active room
+    if (activeChannelRef.current) {
+      activeChannelRef.current.send({
+        type: 'broadcast',
+        event: 'message_edited',
+        payload: { messageId, content: newContent },
+      });
+    }
 
     try {
       await fetch('/api/chat/messages', {
@@ -548,7 +893,7 @@ export default function MobileActiveChat({
     } catch {}
   };
 
-  // Delete for Everyone
+  // Delete for Everyone with optimistic update and real-time broadcast
   const handleDeleteMessage = async (messageId: string) => {
     setMessages((prev) =>
       prev.map((m) =>
@@ -563,6 +908,15 @@ export default function MobileActiveChat({
       media_url: null,
       file_name: null,
     });
+
+    // Broadcast deletion immediately to active room
+    if (activeChannelRef.current) {
+      activeChannelRef.current.send({
+        type: 'broadcast',
+        event: 'message_deleted',
+        payload: { messageId },
+      });
+    }
 
     try {
       await fetch(`/api/chat/messages?message_id=${messageId}`, { method: 'DELETE' });
@@ -614,9 +968,9 @@ export default function MobileActiveChat({
             </h2>
 
             <p className="text-[10px] truncate flex items-center gap-1">
-              {typingUsernames.length > 0 ? (
+              {combinedTypingUsers.length > 0 ? (
                 <span className="text-brand-400 font-medium animate-pulse">
-                  {typingUsernames.join(', ')} typing...
+                  {combinedTypingUsers.join(', ')} typing...
                 </span>
               ) : (
                 <span className={isOnline ? 'text-emerald-400 font-medium' : 'text-slate-400'}>
@@ -753,7 +1107,7 @@ export default function MobileActiveChat({
                 value={text}
                 onChange={(e) => {
                   setText(e.target.value);
-                  if (onTyping) onTyping();
+                  handleTyping();
                 }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && text.trim()) {

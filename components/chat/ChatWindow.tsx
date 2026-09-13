@@ -79,6 +79,10 @@ export default function ChatWindow({
   const isLoadingOlderRef = useRef(false);
 
   const [messages, setMessages] = useState<Message[]>([]);
+  const messagesRef = useRef<Message[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
   const [loading, setLoading] = useState(true);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const [hasMoreOlder, setHasMoreOlder] = useState(true);
@@ -518,6 +522,56 @@ export default function ChatWindow({
       supabase.removeChannel(channel);
     };
   }, [conversation.id, currentUser.id, supabase]);
+
+  // Adaptive Active-Chat Delta Sync Loop (High-frequency background fail-safe)
+  useEffect(() => {
+    let isMounted = true;
+
+    const deltaSyncInterval = setInterval(async () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (!messagesRef.current || messagesRef.current.length === 0) return;
+
+      const confirmed = messagesRef.current.filter(
+        (m) => !m.id.startsWith('temp-') && m.created_at
+      );
+      if (confirmed.length === 0) return;
+      const latestTs = confirmed[confirmed.length - 1].created_at;
+
+      try {
+        const res = await fetch(
+          `/api/chat/messages?conversation_id=${conversation.id}&after=${encodeURIComponent(latestTs)}`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (isMounted && data.messages && data.messages.length > 0) {
+          const freshMessages: Message[] = data.messages;
+
+          setMessages((prev) => {
+            const existingIds = new Set(prev.map((m) => m.id));
+            const newArrivals = freshMessages.filter((m) => !existingIds.has(m.id));
+            if (newArrivals.length === 0) return prev;
+
+            const hasOther = newArrivals.some((m) => m.sender_id !== currentUser.id);
+            if (hasOther) {
+              playReceiveSound();
+            }
+
+            saveCachedMessages(conversation.id, newArrivals);
+            setTimeout(() => scrollToBottom('smooth'), 50);
+            return [...prev, ...newArrivals];
+          });
+        }
+      } catch {
+        // Silently recover on next cycle
+      }
+    }, 1500);
+
+    return () => {
+      isMounted = false;
+      clearInterval(deltaSyncInterval);
+    };
+  }, [conversation.id, currentUser.id]);
 
   const broadcastToRoom = (event: string, payload: any) => {
     if (activeChannelRef.current) {

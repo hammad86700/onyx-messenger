@@ -99,6 +99,49 @@ export default function MobileShell({
 
   // 2. Scalable Real-Time Socket Architecture: Single Pooled User Channel
   useEffect(() => {
+    const handleIncoming = (newMsg: Message) => {
+      if (!newMsg || !newMsg.conversation_id) return;
+
+      const isCurrentChat = activeConversationRef.current?.id === newMsg.conversation_id;
+
+      // If this conversation is currently open, forward immediately to MobileActiveChat
+      if (isCurrentChat) {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('onyx-incoming-message', { detail: newMsg }));
+        }
+      } else if (newMsg.sender_id !== currentUser.id) {
+        playReceiveSound();
+      }
+
+      // Check if message belongs to one of user's conversations
+      setConversations((prev) => {
+        const idx = prev.findIndex((c) => c.id === newMsg.conversation_id);
+        if (idx === -1) {
+          fetchConversations();
+          return prev;
+        }
+
+        const targetConv = prev[idx];
+        const updatedConv: Conversation = {
+          ...targetConv,
+          last_message: newMsg,
+          updated_at: newMsg.created_at,
+          unread_count: isCurrentChat
+            ? 0
+            : newMsg.sender_id === currentUser.id
+            ? targetConv.unread_count || 0
+            : (targetConv.unread_count || 0) + 1,
+        };
+
+        const next = [...prev];
+        next.splice(idx, 1);
+        return [updatedConv, ...next];
+      });
+
+      // Cache in IndexedDB
+      saveCachedMessage(newMsg);
+    };
+
     const channelName = `user:${currentUser.id}`;
     const channel = supabase.channel(channelName, {
       config: {
@@ -112,52 +155,42 @@ export default function MobileShell({
     channel.on(
       'postgres_changes',
       {
-        event: '*',
+        event: 'INSERT',
         schema: 'public',
         table: 'messages',
       },
       (payload) => {
-        if (payload.eventType === 'INSERT') {
-          const newMsg = payload.new as Message;
-
-          // Check if message belongs to one of user's conversations
-          setConversations((prev) => {
-            const idx = prev.findIndex((c) => c.id === newMsg.conversation_id);
-            if (idx === -1) {
-              fetchConversations();
-              return prev;
-            }
-
-            const targetConv = prev[idx];
-            const isCurrentChat = activeConversationRef.current?.id === targetConv.id;
-
-            if (!isCurrentChat && newMsg.sender_id !== currentUser.id) {
-              playReceiveSound();
-            }
-
-            const updatedConv: Conversation = {
-              ...targetConv,
-              last_message: newMsg,
-              updated_at: newMsg.created_at,
-              unread_count: isCurrentChat
-                ? 0
-                : newMsg.sender_id === currentUser.id
-                ? targetConv.unread_count || 0
-                : (targetConv.unread_count || 0) + 1,
-            };
-
-            const next = [...prev];
-            next.splice(idx, 1);
-            return [updatedConv, ...next];
-          });
-
-          // Cache in IndexedDB
-          saveCachedMessage(newMsg);
-        } else if (payload.eventType === 'UPDATE') {
-          fetchConversations();
-        }
+        const newMsg = payload.new as Message;
+        handleIncoming(newMsg);
       }
     );
+
+    channel.on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'messages',
+      },
+      () => {
+        fetchConversations();
+      }
+    );
+
+    // Also listen for broadcast user notifications and new messages
+    channel.on('broadcast', { event: 'user_notification' }, (payload) => {
+      const data = payload.payload;
+      if (data?.recipient_id === currentUser.id && data?.message) {
+        handleIncoming(data.message);
+      }
+    });
+
+    channel.on('broadcast', { event: 'new_message' }, (payload) => {
+      const newMsg = payload.payload as Message;
+      if (newMsg) {
+        handleIncoming(newMsg);
+      }
+    });
 
     channel.subscribe();
 
@@ -278,11 +311,45 @@ export default function MobileShell({
       >
         {activeConversation && (
           <MobileActiveChat
+            key={activeConversation.id}
             conversation={activeConversation}
             currentUser={currentUser}
             onlineUserIds={onlineUserIds}
             onBack={handleBackToFeed}
             currentTheme={currentTheme}
+            onBroadcastMessage={(sentMsg) => {
+              // Update feed conversation list snippet immediately
+              setConversations((prev) => {
+                const idx = prev.findIndex((c) => c.id === sentMsg.conversation_id);
+                if (idx === -1) return prev;
+                const target = prev[idx];
+                const updated = {
+                  ...target,
+                  last_message: sentMsg,
+                  updated_at: sentMsg.created_at,
+                };
+                const next = [...prev];
+                next.splice(idx, 1);
+                return [updated, ...next];
+              });
+
+              // Forward notification to partner's user channel
+              if (userChannelRef.current) {
+                const partner = activeConversation.participants?.find(
+                  (p) => p.user_id !== currentUser.id
+                )?.profile;
+                if (partner?.id) {
+                  userChannelRef.current.send({
+                    type: 'broadcast',
+                    event: 'user_notification',
+                    payload: {
+                      recipient_id: partner.id,
+                      message: sentMsg,
+                    },
+                  });
+                }
+              }
+            }}
           />
         )}
       </div>
