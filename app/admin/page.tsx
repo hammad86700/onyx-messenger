@@ -355,7 +355,7 @@ export default function AdminPortalPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#090a0f] text-slate-100 flex flex-col">
+    <div className="h-full w-full flex flex-col bg-[#07080b] text-slate-100 overflow-hidden">
       {/* Toast alert */}
       {toastMessage && (
         <div className="fixed top-5 right-5 z-50 px-4 py-3 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-sm font-medium shadow-2xl flex items-center gap-2.5 animate-fadeIn backdrop-blur-md">
@@ -365,7 +365,7 @@ export default function AdminPortalPage() {
       )}
 
       {/* Top Navigation */}
-      <header className="border-b border-slate-800/80 bg-slate-900/90 backdrop-blur-md sticky top-0 z-40">
+      <header className="border-b border-slate-800/80 bg-slate-900/90 backdrop-blur-md sticky top-0 z-40 shrink-0">
         <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-14 sm:h-16 flex items-center justify-between gap-2">
           {/* Left: Back to chat */}
           <Link
@@ -416,8 +416,9 @@ export default function AdminPortalPage() {
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-8 flex-1 w-full space-y-4 sm:space-y-6 pb-24">
+      {/* Main Scrollable Viewport - Just like Settings with 60fps mobile touch scroll */}
+      <div className="flex-1 min-h-0 w-full overflow-y-auto overflow-x-hidden chat-scroll-viewport overscroll-contain">
+        <main className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-3.5 sm:py-6 w-full space-y-4 sm:space-y-6 pb-32">
         {/* Real-Time Metrics Grid: 2 columns on mobile, 4 on desktop */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
           {/* Total Registered Users */}
@@ -956,6 +957,7 @@ export default function AdminPortalPage() {
           </div>
         </div>
       </main>
+      </div>
 
       {/* Generated Token Modal */}
       {resetModal.isOpen && (
