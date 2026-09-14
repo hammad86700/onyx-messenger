@@ -282,6 +282,18 @@ export default function MobileShell({
       }
     );
 
+    channel.on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'conversations',
+      },
+      () => {
+        fetchConversations();
+      }
+    );
+
     // Also listen for broadcast user notifications and new messages
     channel.on('broadcast', { event: 'user_notification' }, (payload) => {
       const data = payload.payload;
@@ -504,13 +516,46 @@ export default function MobileShell({
     return () => clearInterval(interval);
   }, []);
 
-  // 6. Request notification permission on initial mount
+  // 6. Proactively request browser notification permission on user gesture / interaction
   useEffect(() => {
     if (typeof window !== 'undefined' && 'Notification' in window) {
       if (Notification.permission === 'default') {
-        requestNotificationPermission().catch(() => {});
+        const handleUserGesture = () => {
+          requestNotificationPermission().catch(() => {});
+        };
+        window.addEventListener('click', handleUserGesture, { once: true });
+        window.addEventListener('touchend', handleUserGesture, { once: true });
+        return () => {
+          window.removeEventListener('click', handleUserGesture);
+          window.removeEventListener('touchend', handleUserGesture);
+        };
       }
     }
+  }, []);
+
+  // 7. Auto-dismiss floating notification banner after 6 seconds
+  useEffect(() => {
+    if (floatingBanner) {
+      const timer = setTimeout(() => {
+        setFloatingBanner(null);
+      }, 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [floatingBanner]);
+
+  // 8. Immediate background re-sync on visibility change or window focus
+  useEffect(() => {
+    const handleVisibilityOrFocus = () => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        fetchConversations();
+      }
+    };
+    window.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    return () => {
+      window.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+    };
   }, []);
 
   // Total unread count and app badge synchronization
@@ -603,7 +648,7 @@ export default function MobileShell({
   };
 
   const handleBroadcastMessage = (sentMsg: Message) => {
-    // Update feed conversation list snippet immediately
+    // 1. Update feed conversation list snippet immediately
     setConversations((prev) => {
       const idx = prev.findIndex((c) => c.id === sentMsg.conversation_id);
       if (idx === -1) return prev;
@@ -618,22 +663,67 @@ export default function MobileShell({
       return [updated, ...next];
     });
 
-    // Forward notification to partner's user channel
-    if (userChannelRef.current && activeConversationRef.current) {
-      const partner = activeConversationRef.current.participants?.find(
-        (p) => p.user_id !== currentUser.id
-      )?.profile;
-      if (partner?.id) {
-        userChannelRef.current.send({
-          type: 'broadcast',
-          event: 'user_notification',
-          payload: {
-            recipient_id: partner.id,
-            message: sentMsg,
-          },
-        });
+    // 2. Resolve target conversation to find all other participants
+    const targetConv =
+      (activeConversationRef.current?.id === sentMsg.conversation_id
+        ? activeConversationRef.current
+        : null) ||
+      conversationsRef.current.find((c) => c.id === sentMsg.conversation_id);
+
+    const recipientUserIds: string[] = [];
+    if (targetConv?.participants && targetConv.participants.length > 0) {
+      for (const p of targetConv.participants) {
+        if (p.user_id && p.user_id !== currentUser.id) {
+          recipientUserIds.push(p.user_id);
+        }
       }
     }
+
+    const enrichedMsg: Message = {
+      ...sentMsg,
+      sender: sentMsg.sender || currentUser,
+    };
+
+    // 3. Dispatch real-time notification to EACH recipient's user channel
+    for (const recipientId of recipientUserIds) {
+      const recipientChannel = supabase.channel(`user:${recipientId}`);
+      recipientChannel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          recipientChannel
+            .send({
+              type: 'broadcast',
+              event: 'user_notification',
+              payload: {
+                recipient_id: recipientId,
+                message: enrichedMsg,
+              },
+            })
+            .finally(() => {
+              setTimeout(() => {
+                supabase.removeChannel(recipientChannel);
+              }, 3000);
+            });
+        }
+      });
+    }
+
+    // 4. Also broadcast to chat room channel for active viewers
+    const roomChannel = supabase.channel(`chat-room:${sentMsg.conversation_id}`);
+    roomChannel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        roomChannel
+          .send({
+            type: 'broadcast',
+            event: 'new_message',
+            payload: enrichedMsg,
+          })
+          .finally(() => {
+            setTimeout(() => {
+              supabase.removeChannel(roomChannel);
+            }, 3000);
+          });
+      }
+    });
   };
 
   const handleLogout = async () => {

@@ -76,6 +76,51 @@ export async function updateAppBadge(count: number): Promise<void> {
   } catch {}
 }
 
+let originalDocumentTitle = typeof document !== 'undefined' ? document.title : 'Onyx - Fast. Private. Borderless.';
+let titleBlinkTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Flashes the browser tab title when a new message arrives and the tab is not in focus.
+ */
+export function flashTabTitle(title: string, body?: string): void {
+  if (typeof document === 'undefined') return;
+
+  if (titleBlinkTimer) {
+    clearInterval(titleBlinkTimer);
+    titleBlinkTimer = null;
+  }
+
+  const baseTitle = 'Onyx - Fast. Private. Borderless.';
+  const alertText = `(1) 💬 ${title}: ${body ? body.slice(0, 20) : 'New message'}`;
+
+  let show = true;
+  document.title = alertText;
+
+  titleBlinkTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && !document.hidden && document.hasFocus()) {
+      document.title = baseTitle;
+      if (titleBlinkTimer) clearInterval(titleBlinkTimer);
+      titleBlinkTimer = null;
+      return;
+    }
+    document.title = show ? alertText : baseTitle;
+    show = !show;
+  }, 1200);
+
+  const clearAlert = () => {
+    if (titleBlinkTimer) {
+      clearInterval(titleBlinkTimer);
+      titleBlinkTimer = null;
+    }
+    if (typeof document !== 'undefined') {
+      document.title = baseTitle;
+    }
+    window.removeEventListener('focus', clearAlert);
+  };
+
+  window.addEventListener('focus', clearAlert);
+}
+
 /**
  * Fires a native system/browser notification that appears outside the browser window (Action Center / Notification Tray).
  */
@@ -90,7 +135,21 @@ export async function sendSystemNotification({
   actions,
   requireInteraction = false,
 }: NotificationPayload): Promise<void> {
+  // Always trigger tab title alert if document is hidden or unfocused
+  flashTabTitle(title, body);
+
   if (!isNotificationSupported()) return;
+
+  // If permission has not yet been asked, try requesting it
+  if (Notification.permission === 'default') {
+    try {
+      const granted = await requestNotificationPermission();
+      if (!granted) return;
+    } catch {
+      return;
+    }
+  }
+
   if (Notification.permission !== 'granted') return;
 
   const resolvedIcon = icon || '/icon-192.png';
@@ -109,14 +168,14 @@ export async function sendSystemNotification({
             conversationId,
             url: conversationId ? `/?conversation=${conversationId}` : '/',
           },
-          vibrate: [200, 100, 200],
+          vibrate: [150, 75, 150, 75, 250],
           renotify: true,
+          silent: false,
           requireInteraction,
+          actions: actions && actions.length > 0 ? actions : [
+            { action: 'open', title: '💬 Open Chat' },
+          ],
         };
-
-        if (actions && actions.length > 0) {
-          swOptions.actions = actions;
-        }
 
         await reg.showNotification(title, swOptions);
         return;
@@ -130,6 +189,7 @@ export async function sendSystemNotification({
       badge,
       tag: tag || (conversationId ? `onyx-conv-${conversationId}` : undefined),
       requireInteraction,
+      silent: false,
     });
 
     notif.onclick = (e) => {

@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client';
 import { Profile, isFounder } from '@/types/database';
 import { MobileChatLayout } from '@/components/mobile/MobileShell';
 import AuthView from '@/components/mobile/AuthView';
+import { initAudioOnFirstInteraction } from '@/lib/sound';
 
 export default function MainPage() {
   const supabase = createClient();
@@ -13,6 +14,12 @@ export default function MainPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [onlineUserIds, setOnlineUserIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
+
+  // Initialize Web Audio API on first tap/click so sound notifications always play
+  useEffect(() => {
+    const cleanup = initAudioOnFirstInteraction();
+    return () => cleanup();
+  }, []);
 
   // 1. Initial User & Profile Load with Fast-Bypass & Hard Timeout
   useEffect(() => {
