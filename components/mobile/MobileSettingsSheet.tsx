@@ -17,12 +17,24 @@ import {
   Download,
   KeyRound,
   Bell,
+  HardDrive,
+  Trash2,
+  Mic,
+  Camera,
+  ShieldCheck,
 } from 'lucide-react';
 import {
   getNotificationPermission,
   requestNotificationPermission,
   sendTestNotification,
 } from '@/lib/notifications';
+import {
+  getStorageSettings,
+  saveStorageSettings,
+  getStorageUsage,
+  clearMediaCache,
+  MediaStorageSettings,
+} from '@/lib/storage-manager';
 
 interface MobileSettingsSheetProps {
   currentUser: Profile;
@@ -32,6 +44,7 @@ interface MobileSettingsSheetProps {
   onOpenAdmin?: () => void;
   onEditProfile?: () => void;
   onChangePassword?: () => void;
+  onOpenPermissions?: () => void;
 }
 
 const THEMES: { id: OnyxTheme; name: string; dot: string; desc: string }[] = [
@@ -49,14 +62,32 @@ export default function MobileSettingsSheet({
   onOpenAdmin,
   onEditProfile,
   onChangePassword,
+  onOpenPermissions,
 }: MobileSettingsSheetProps) {
   const isUserFounder = isFounder(currentUser);
   const [permission, setPermission] = React.useState<string>('default');
   const [testing, setTesting] = React.useState(false);
+  const [storageSettings, setStorageSettings] = React.useState<MediaStorageSettings>(getStorageSettings());
+  const [storageUsage, setStorageUsage] = React.useState({ usedMB: '0.0 MB', quotaMB: 'Loading...' });
+  const [clearingCache, setClearingCache] = React.useState(false);
 
   React.useEffect(() => {
     setPermission(getNotificationPermission());
+    getStorageUsage().then(setStorageUsage);
   }, []);
+
+  const handleToggleAutoDownload = (key: keyof MediaStorageSettings) => {
+    const next = saveStorageSettings({ [key]: !storageSettings[key] });
+    setStorageSettings(next);
+  };
+
+  const handleClearCache = async () => {
+    setClearingCache(true);
+    await clearMediaCache();
+    const updated = await getStorageUsage();
+    setStorageUsage(updated);
+    setClearingCache(false);
+  };
 
   const handleRequestPermission = async () => {
     const granted = await requestNotificationPermission();
@@ -173,6 +204,89 @@ export default function MobileSettingsSheet({
           >
             <Sparkles className="w-3.5 h-3.5 text-amber-400" />
             <span>{testing ? 'Sending...' : 'Test Alert'}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* WhatsApp Media Storage & Device Permissions Card */}
+      <div className="p-3.5 rounded-3xl bg-slate-900/80 border border-white/10 shadow-xl backdrop-blur-xl shrink-0 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/30">
+              <HardDrive className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="text-xs font-bold text-white">Mobile Storage & Permissions</h3>
+              <p className="text-[10px] text-slate-400">WhatsApp media auto-download & hardware access</p>
+            </div>
+          </div>
+
+          <button
+            onClick={onOpenPermissions}
+            className="px-2.5 py-1 rounded-xl bg-brand-500/20 hover:bg-brand-500/30 text-brand-300 border border-brand-500/30 text-[10px] font-bold transition-colors flex items-center gap-1"
+          >
+            <ShieldCheck className="w-3 h-3" />
+            <span>Manage</span>
+          </button>
+        </div>
+
+        {/* Auto-Download Checkboxes */}
+        <div className="p-3 rounded-2xl bg-white/[0.02] border border-white/5 space-y-2">
+          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+            Auto-Download to Device Storage:
+          </span>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <label className="flex items-center gap-2 cursor-pointer text-slate-300 select-none">
+              <input
+                type="checkbox"
+                checked={storageSettings.autoDownloadPhotos}
+                onChange={() => handleToggleAutoDownload('autoDownloadPhotos')}
+                className="rounded accent-brand-500"
+              />
+              <span>Photos</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer text-slate-300 select-none">
+              <input
+                type="checkbox"
+                checked={storageSettings.autoDownloadAudio}
+                onChange={() => handleToggleAutoDownload('autoDownloadAudio')}
+                className="rounded accent-brand-500"
+              />
+              <span>Voice Notes</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer text-slate-300 select-none">
+              <input
+                type="checkbox"
+                checked={storageSettings.autoDownloadVideos}
+                onChange={() => handleToggleAutoDownload('autoDownloadVideos')}
+                className="rounded accent-brand-500"
+              />
+              <span>Videos</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer text-slate-300 select-none">
+              <input
+                type="checkbox"
+                checked={storageSettings.autoDownloadDocs}
+                onChange={() => handleToggleAutoDownload('autoDownloadDocs')}
+                className="rounded accent-brand-500"
+              />
+              <span>Documents</span>
+            </label>
+          </div>
+        </div>
+
+        {/* Storage Stats & Clear Cache */}
+        <div className="flex items-center justify-between pt-1 text-xs">
+          <span className="text-[11px] text-slate-400">
+            Cached Media: <span className="text-white font-mono font-bold">{storageUsage.usedMB}</span>
+          </span>
+          <button
+            onClick={handleClearCache}
+            disabled={clearingCache}
+            className="px-2.5 py-1 rounded-xl bg-white/5 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-colors text-[11px] font-semibold flex items-center gap-1.5"
+          >
+            <Trash2 className="w-3 h-3" />
+            <span>{clearingCache ? 'Clearing...' : 'Clear Cache'}</span>
           </button>
         </div>
       </div>

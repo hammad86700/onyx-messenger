@@ -99,11 +99,20 @@ export async function GET(request: NextRequest) {
       );
       const myPart = participantRows.find((p) => p.conversation_id === conv.id);
 
+      const isDirect = conv.type === 'direct';
+      const isPendingRequest = isDirect && conv.name === 'pending_request';
+      const isIncoming = isPendingRequest && conv.created_by !== user.id;
+      const isOutgoing = isPendingRequest && conv.created_by === user.id;
+
       return {
         ...conv,
         participants,
         last_message: lastMessage || null,
         is_pinned: myPart?.is_pinned === true,
+        is_request: isPendingRequest,
+        is_incoming_request: isIncoming,
+        is_outgoing_request: isOutgoing,
+        request_status: isPendingRequest ? 'pending' : 'accepted',
       };
     });
 
@@ -185,16 +194,27 @@ export async function POST(request: NextRequest) {
               .eq('id', existingDirect.id)
               .single();
 
-            return NextResponse.json({ conversation: fullExisting || existingDirect, isNew: false });
+            const targetConv = fullExisting || existingDirect;
+            const isPendingRequest = targetConv.name === 'pending_request';
+            const enriched = {
+              ...targetConv,
+              is_request: isPendingRequest,
+              is_incoming_request: isPendingRequest && targetConv.created_by !== user.id,
+              is_outgoing_request: isPendingRequest && targetConv.created_by === user.id,
+              request_status: isPendingRequest ? 'pending' : 'accepted',
+            };
+
+            return NextResponse.json({ conversation: enriched, isNew: false });
           }
         }
       }
 
-      // Create new direct conversation
+      // Create new direct conversation with pending_request status
       const { data: newConv, error: createConvErr } = await supabaseAdmin
         .from('conversations')
         .insert({
           type: 'direct',
+          name: 'pending_request',
           created_by: user.id,
         })
         .select()
@@ -230,7 +250,16 @@ export async function POST(request: NextRequest) {
         .eq('id', newConv.id)
         .single();
 
-      return NextResponse.json({ conversation: fullNewConv || newConv, isNew: true });
+      const convFinal = fullNewConv || newConv;
+      const enrichedNew = {
+        ...convFinal,
+        is_request: true,
+        is_incoming_request: false,
+        is_outgoing_request: true,
+        request_status: 'pending',
+      };
+
+      return NextResponse.json({ conversation: enrichedNew, isNew: true });
     }
 
     if (type === 'group') {

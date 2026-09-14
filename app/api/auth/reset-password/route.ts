@@ -17,7 +17,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 1. Verify single-use reset token
+    // 1. Verify single-use reset token (must not be a pending request ref)
+    if (typeof token !== 'string' || token.startsWith('req_')) {
+      return NextResponse.json(
+        { error: 'Invalid reset token. Password reset tokens must be issued by the Administrator.' },
+        { status: 400 }
+      );
+    }
+
     const { data: tokenRecord, error: tokenErr } = await supabaseAdmin
       .from('password_reset_tokens')
       .select('id, user_id, expires_at, is_used')

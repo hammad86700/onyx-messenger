@@ -41,6 +41,16 @@ interface ResetModalData {
   expiresAt: string | null;
 }
 
+interface PasswordResetRequest {
+  id: string;
+  user_id: string;
+  created_at: string;
+  expires_at: string;
+  token_preview: string;
+  user: Profile;
+  email: string | null;
+}
+
 export default function AdminPortalPage() {
   const router = useRouter();
   const supabase = createClient();
@@ -76,6 +86,10 @@ export default function AdminPortalPage() {
     resetUrl: null,
     expiresAt: null,
   });
+
+  // Password reset requests state
+  const [resetRequests, setResetRequests] = useState<PasswordResetRequest[]>([]);
+  const [loadingRequests, setLoadingRequests] = useState(false);
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -129,6 +143,9 @@ export default function AdminPortalPage() {
       } catch (err) {
         console.error('Failed to load stats:', err);
       }
+
+      // Fetch pending password reset requests
+      fetchResetRequests();
     } catch (err: any) {
       console.error('Error loading admin data:', err);
     } finally {
@@ -251,6 +268,85 @@ export default function AdminPortalPage() {
       showToast(`Password reset link generated & copied for @${targetUser.username}!`);
     } catch (err: any) {
       alert(err.message || 'Error generating reset token');
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  const fetchResetRequests = async () => {
+    try {
+      setLoadingRequests(true);
+      const res = await fetch('/api/admin/reset-requests');
+      const data = await res.json();
+      if (data.requests) {
+        setResetRequests(data.requests);
+      }
+    } catch (err) {
+      console.error('Failed to load reset requests:', err);
+    } finally {
+      setLoadingRequests(false);
+    }
+  };
+
+  const handleFulfillResetRequest = async (req: PasswordResetRequest) => {
+    setActionLoadingId(`fulfill-${req.id}`);
+    try {
+      // 1. Generate reset token
+      const res = await fetch('/api/admin/generate-reset-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_user_id: req.user_id }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to generate reset token');
+
+      // 2. Mark request as resolved
+      await fetch('/api/admin/reset-requests/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ request_id: req.id }),
+      });
+
+      // Remove from list
+      setResetRequests((prev) => prev.filter((r) => r.id !== req.id));
+
+      if (navigator?.clipboard) {
+        await navigator.clipboard.writeText(data.resetUrl);
+      }
+
+      setResetModal({
+        isOpen: true,
+        user: req.user,
+        resetUrl: data.resetUrl,
+        expiresAt: data.expiresAt,
+      });
+
+      showToast(`Reset link created for @${req.user.username} & copied to clipboard!`);
+    } catch (err: any) {
+      alert(err.message || 'Error fulfilling reset request');
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  const handleDismissResetRequest = async (requestId: string) => {
+    if (!confirm('Are you sure you want to dismiss this password reset request?')) return;
+
+    setActionLoadingId(`dismiss-${requestId}`);
+    try {
+      const res = await fetch('/api/admin/reset-requests/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ request_id: requestId }),
+      });
+
+      if (!res.ok) throw new Error('Failed to dismiss request');
+
+      setResetRequests((prev) => prev.filter((r) => r.id !== requestId));
+      showToast('Password reset request dismissed.');
+    } catch (err: any) {
+      alert(err.message || 'Error dismissing request');
     } finally {
       setActionLoadingId(null);
     }
@@ -496,6 +592,98 @@ export default function AdminPortalPage() {
               </div>
             </div>
           </div>
+        </div>
+
+        {/* Password Reset Requests Queue */}
+        <div className="glass-panel p-4 sm:p-6 rounded-2xl border border-amber-500/20 shadow-xl relative overflow-hidden">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 sm:pb-4 border-b border-white/5 mb-3 sm:mb-4 gap-2">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                <KeyRound className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <h2 className="text-sm sm:text-base font-bold text-white">Password Reset Requests</h2>
+                  <span className={`text-[9px] uppercase font-mono px-2 py-0.5 rounded-full font-bold shrink-0 ${
+                    resetRequests.length > 0
+                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse'
+                      : 'bg-slate-800 text-slate-400'
+                  }`}>
+                    {resetRequests.length} Pending
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400 truncate mt-0.5">
+                  Users requesting credentials recovery via WhatsApp or Portal.
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={fetchResetRequests}
+              disabled={loadingRequests}
+              className="flex items-center gap-1.5 text-xs text-amber-400 hover:text-amber-300 bg-amber-500/10 px-3 py-1.5 rounded-xl border border-amber-500/20 self-start sm:self-auto transition-colors"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingRequests ? 'animate-spin' : ''}`} />
+              <span>Refresh</span>
+            </button>
+          </div>
+
+          {/* List of Requests */}
+          {resetRequests.length === 0 ? (
+            <div className="p-4 text-center rounded-xl bg-slate-900/40 border border-white/5 text-slate-400 text-xs flex items-center justify-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              <span>All password recovery requests resolved. No pending requests.</span>
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {resetRequests.map((req) => (
+                <div
+                  key={req.id}
+                  className="p-3.5 rounded-xl bg-slate-900/80 border border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-amber-500/30 transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-slate-800 border border-white/10 flex items-center justify-center font-bold text-xs text-amber-300 overflow-hidden shrink-0">
+                      {req.user.avatar_url ? (
+                        <img src={req.user.avatar_url} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        req.user.full_name?.slice(0, 2).toUpperCase() || 'U'
+                      )}
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-bold text-white">{req.user.full_name}</span>
+                        {isFounder(req.user) && <FounderBadge size="sm" />}
+                      </div>
+                      <p className="text-[11px] text-amber-400 font-mono">@{req.user.username}</p>
+                      {req.email && (
+                        <p className="text-[10px] text-slate-400">{req.email}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 self-end sm:self-center">
+                    <button
+                      onClick={() => handleFulfillResetRequest(req)}
+                      disabled={actionLoadingId === `fulfill-${req.id}`}
+                      className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-amber-600 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 text-white font-bold text-xs shadow-md shadow-amber-500/20 flex items-center gap-1.5 transition-all"
+                    >
+                      <KeyRound className="w-3.5 h-3.5" />
+                      <span>Issue Reset Link</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleDismissResetRequest(req.id)}
+                      disabled={actionLoadingId === `dismiss-${req.id}`}
+                      className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-white/5 text-xs font-medium transition-colors"
+                      title="Dismiss request"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Emergency Broadcast Announcement Publisher */}
@@ -1007,6 +1195,20 @@ export default function AdminPortalPage() {
                 {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                 <span>{copied ? 'Copied!' : 'Copy Link'}</span>
               </button>
+
+              {resetModal.resetUrl && (
+                <a
+                  href={`https://wa.me/?text=${encodeURIComponent(
+                    `Assalam o Alaikum ${resetModal.user?.full_name || ''},\n\nYour Onyx Messenger password recovery link is ready:\n${resetModal.resetUrl}\n\nThis single-use link is valid for 30 minutes.\n\nRegards,\nAdmin Hammad`
+                  )}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-colors flex items-center gap-1.5 shadow-md shadow-emerald-600/20"
+                >
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  <span>Send on WhatsApp</span>
+                </a>
+              )}
 
               {resetModal.resetUrl && (
                 <a

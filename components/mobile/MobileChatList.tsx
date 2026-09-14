@@ -17,6 +17,10 @@ import {
   CheckCheck,
   X,
   UserPlus,
+  MessageSquare,
+  ChevronRight,
+  ArrowLeft,
+  ShieldAlert,
 } from 'lucide-react';
 
 interface MobileChatListProps {
@@ -44,6 +48,7 @@ export default function MobileChatList({
   const [searchResults, setSearchResults] = useState<Profile[]>([]);
   const [searching, setSearching] = useState(false);
   const [startingChatId, setStartingChatId] = useState<string | null>(null);
+  const [viewingRequests, setViewingRequests] = useState(false);
 
   // Live user search by username / query
   useEffect(() => {
@@ -72,8 +77,18 @@ export default function MobileChatList({
     return () => clearTimeout(delay);
   }, [searchQuery, currentUser.id]);
 
+  // Separate incoming requests that have messages
+  const incomingRequests = conversations.filter(
+    (c) => c.is_incoming_request && c.last_message
+  );
+
+  // Normal conversations (accepted chats, group chats, saved messages, or outgoing requests)
+  const normalConversations = conversations.filter(
+    (c) => !c.is_incoming_request
+  );
+
   // Filter conversations locally if searchQuery isn't @
-  const filteredConversations = conversations.filter((c) => {
+  const filteredConversations = normalConversations.filter((c) => {
     if (!searchQuery.trim() || searchQuery.startsWith('@')) return true;
     const q = searchQuery.toLowerCase();
     if (c.name && c.name.toLowerCase().includes(q)) return true;
@@ -145,6 +160,127 @@ export default function MobileChatList({
 
       {/* Main List Area */}
       <div className="flex-1 min-h-0 overflow-y-auto chat-scroll-viewport divide-y divide-white/[0.04] pb-24">
+        {/* VIEW 1: Dedicated Message Requests View */}
+        {viewingRequests ? (
+          <div className="p-3 space-y-3 animate-fadeIn">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-2 border-b border-white/10">
+              <button
+                onClick={() => setViewingRequests(false)}
+                className="flex items-center gap-1.5 text-xs text-brand-400 hover:text-brand-300 font-semibold touch-manipulation"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>All Chats</span>
+              </button>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-bold text-white">Message Requests</span>
+                <span className="px-1.5 py-0.5 rounded-full bg-brand-500 text-white font-mono text-[10px] font-bold">
+                  {incomingRequests.length}
+                </span>
+              </div>
+            </div>
+
+            {/* Subtitle Explainer Banner */}
+            <div className="p-3 rounded-2xl bg-brand-500/10 border border-brand-500/20 text-slate-300 text-[11px] leading-relaxed flex items-start gap-2.5">
+              <ShieldAlert className="w-4 h-4 text-brand-400 shrink-0 mt-0.5" />
+              <span>
+                These are messages from people you haven&apos;t connected with yet. Open a request to accept or decline. Senders won&apos;t know you&apos;ve seen their message until you accept.
+              </span>
+            </div>
+
+            {/* Requests List */}
+            {incomingRequests.length === 0 ? (
+              <div className="py-12 text-center text-slate-500 text-xs">
+                No pending message requests.
+              </div>
+            ) : (
+              incomingRequests.map((conv) => {
+                const partner = conv.participants?.find((p) => p.user_id !== currentUser.id)?.profile;
+                const partnerFounder = isFounder(partner);
+                const lastMsg = conv.last_message;
+
+                return (
+                  <button
+                    key={conv.id}
+                    onClick={() => {
+                      onSelectConversation(conv);
+                    }}
+                    className="w-full flex items-center gap-3.5 p-3 rounded-2xl bg-white/[0.03] hover:bg-white/[0.06] border border-white/5 transition-all text-left touch-manipulation group"
+                  >
+                    <div className="w-12 h-12 rounded-full bg-slate-800 border border-brand-500/30 flex items-center justify-center font-bold text-sm text-brand-300 overflow-hidden shrink-0 shadow-md">
+                      {partner?.avatar_url ? (
+                        <img src={partner.avatar_url} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        partner?.full_name?.slice(0, 2).toUpperCase() || 'U'
+                      )}
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between mb-0.5">
+                        <div className="flex items-center gap-1.5 truncate pr-2">
+                          <span className="text-xs font-bold text-white truncate">
+                            {partner?.full_name || 'User'}
+                          </span>
+                          {partnerFounder && <FounderBadge size="sm" />}
+                        </div>
+                        <span className="text-[10px] text-brand-400 font-mono">
+                          {lastMsg?.created_at ? formatMessageTime(lastMsg.created_at) : ''}
+                        </span>
+                      </div>
+
+                      <p className="text-[10px] text-slate-400 font-mono truncate mb-1">
+                        @{partner?.username}
+                      </p>
+
+                      <p className="text-[11px] text-slate-300 truncate">
+                        {lastMsg?.content || (lastMsg?.media_type === 'image' ? '📷 Sent a photo' : 'Sent a message request')}
+                      </p>
+                    </div>
+
+                    <div className="shrink-0 pl-1">
+                      <span className="text-[10px] font-bold px-2 py-1 rounded-xl bg-brand-500/20 text-brand-300 border border-brand-500/30 group-hover:bg-brand-500 group-hover:text-white transition-colors">
+                        Review
+                      </span>
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        ) : (
+          <>
+            {/* Instagram-style Message Requests Banner (Shown when user has incoming requests) */}
+            {incomingRequests.length > 0 && !searchQuery.trim() && (
+              <div className="p-3 pb-1">
+                <button
+                  onClick={() => setViewingRequests(true)}
+                  className="w-full flex items-center justify-between p-3 rounded-2xl bg-gradient-to-r from-brand-950/70 via-slate-900/90 to-indigo-950/70 border border-brand-500/30 hover:border-brand-500/60 active:scale-[0.99] transition-all group shadow-lg shadow-brand-500/10 touch-manipulation"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-brand-600 via-indigo-600 to-pink-600 flex items-center justify-center text-white shadow-md shadow-brand-500/30 shrink-0">
+                      <MessageSquare className="w-4 h-4" />
+                    </div>
+                    <div className="text-left overflow-hidden">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-bold text-white">Message Requests</span>
+                        <span className="px-1.5 py-0.2 rounded-full bg-brand-500 text-white font-mono font-bold text-[10px] shadow-sm animate-pulse">
+                          {incomingRequests.length}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 truncate">
+                        {incomingRequests.length === 1
+                          ? `${incomingRequests[0].participants?.find((p) => p.user_id !== currentUser.id)?.profile.full_name || 'Someone'} wants to message you`
+                          : `${incomingRequests.length} new requests awaiting review`}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <span className="text-[11px] font-semibold text-brand-400">View</span>
+                    <ChevronRight className="w-4 h-4 text-brand-400 group-hover:translate-x-0.5 transition-transform" />
+                  </div>
+                </button>
+              </div>
+            )}
         {/* Search Results Display */}
         {searchQuery.trim() && (
           <div className="p-3">
@@ -288,6 +424,11 @@ export default function MobileChatList({
                         {title}
                       </span>
                       {partnerFounder && <FounderBadge size="sm" />}
+                      {conv.is_outgoing_request && (
+                        <span className="text-[9px] font-medium px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">
+                          Requested
+                        </span>
+                      )}
                     </div>
 
                     <span className={`text-[10px] whitespace-nowrap ${hasUnread ? 'font-bold text-brand-400 font-mono' : 'text-slate-500'}`}>
@@ -336,6 +477,8 @@ export default function MobileChatList({
               </button>
             );
           })
+        )}
+          </>
         )}
       </div>
     </div>

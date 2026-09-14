@@ -38,6 +38,10 @@ export interface Conversation {
   last_message?: Message | null;
   unread_count?: number;
   is_pinned?: boolean;
+  is_request?: boolean;
+  is_incoming_request?: boolean;
+  is_outgoing_request?: boolean;
+  request_status?: 'pending' | 'accepted' | 'declined';
 }
 
 export interface ConversationParticipant {

@@ -36,9 +36,9 @@ export default function ForgotPasswordPage() {
   const [selfLoading, setSelfLoading] = useState(false);
   const [selfError, setSelfError] = useState<string | null>(null);
   const [selfResult, setSelfResult] = useState<{
-    resetUrl: string;
-    token: string;
-    expiresAt: string;
+    requestId: string;
+    whatsappUrl: string;
+    instagramUrl: string;
     user: {
       username: string;
       full_name: string;
@@ -46,7 +46,6 @@ export default function ForgotPasswordPage() {
       is_founder?: boolean;
     };
   } | null>(null);
-  const [copied, setCopied] = useState(false);
 
   // Tab 2: Admin Emergency Override State
   const [adminIdentifier, setAdminIdentifier] = useState('');
@@ -135,14 +134,6 @@ export default function ForgotPasswordPage() {
     }
   };
 
-  const copyResetLink = () => {
-    if (selfResult?.resetUrl && navigator.clipboard) {
-      navigator.clipboard.writeText(selfResult.resetUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
-    }
-  };
-
   return (
     <div className="min-h-screen flex flex-col justify-center items-center px-4 py-12 relative overflow-hidden bg-slate-950">
       {/* Ambient background glows */}
@@ -224,14 +215,14 @@ export default function ForgotPasswordPage() {
               )}
 
               {selfResult ? (
-                /* Generated Reset Link View */
+                /* Secure Request Logged View */
                 <div className="space-y-5 animate-fadeIn">
                   <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 flex items-start gap-3">
                     <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-400 mt-0.5" />
                     <div>
-                      <h3 className="text-sm font-bold text-white">Reset Link Ready</h3>
-                      <p className="text-xs text-slate-300 mt-0.5">
-                        A secure, single-use reset token has been verified for{' '}
+                      <h3 className="text-sm font-bold text-white">Reset Request Logged</h3>
+                      <p className="text-xs text-slate-300 mt-0.5 leading-relaxed">
+                        Your password reset request has been logged in the Admin dashboard for{' '}
                         <strong className="text-white">@{selfResult.user.username}</strong>.
                       </p>
                     </div>
@@ -251,40 +242,51 @@ export default function ForgotPasswordPage() {
                       </p>
                       <p className="text-[11px] text-brand-400 font-mono">@{selfResult.user.username}</p>
                     </div>
-                    <div className="flex items-center gap-1 text-[11px] text-slate-400">
-                      <Clock className="w-3.5 h-3.5 text-amber-400" />
-                      <span>Expires in 30m</span>
+                    <div className="text-right">
+                      <span className="text-[10px] font-mono text-slate-400 block">Ref ID</span>
+                      <span className="text-[10px] font-mono text-amber-400 font-semibold">{selfResult.requestId}</span>
                     </div>
                   </div>
 
-                  {/* Action Buttons */}
-                  <div className="space-y-2.5 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => router.push(`/reset-password?token=${selfResult.token}`)}
-                      className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-brand-600 via-indigo-600 to-pink-600 hover:from-brand-500 hover:to-pink-500 text-white font-semibold text-xs transition-all shadow-lg shadow-brand-500/20 flex items-center justify-center gap-2 group"
-                    >
-                      <span>Proceed to Reset Password Now</span>
-                      <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-                    </button>
+                  {/* Security Notice */}
+                  <div className="p-3.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-slate-300 text-xs leading-relaxed space-y-1">
+                    <p className="font-semibold text-white flex items-center gap-1.5">
+                      <Shield className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>Security Protection Active</span>
+                    </p>
+                    <p className="text-[11px] text-slate-400">
+                      To prevent unauthorized password resets, recovery links are issued exclusively by Administrator Hammad after verifying your request.
+                    </p>
+                  </div>
 
-                    <button
-                      type="button"
-                      onClick={copyResetLink}
+                  {/* WhatsApp Action Button */}
+                  <div className="space-y-2.5 pt-1">
+                    <a
+                      href={selfResult.whatsappUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:scale-[0.99] text-white font-bold text-xs transition-all shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2"
+                    >
+                      <MessageSquare className="w-4 h-4" />
+                      <span>Send Request to Admin on WhatsApp</span>
+                    </a>
+
+                    <a
+                      href={selfResult.instagramUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-purple-600 via-pink-600 to-amber-600 hover:opacity-90 active:scale-[0.99] text-white font-semibold text-xs transition-all flex items-center justify-center gap-2"
+                    >
+                      <span>Contact Admin on Instagram (@not_urs_hammi)</span>
+                    </a>
+
+                    <Link
+                      href="/login"
                       className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-white/10 text-xs font-medium transition-colors flex items-center justify-center gap-2"
                     >
-                      {copied ? (
-                        <>
-                          <Check className="w-4 h-4 text-emerald-400" />
-                          <span className="text-emerald-400">Link Copied to Clipboard!</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-4 h-4 text-slate-400" />
-                          <span>Copy Reset URL</span>
-                        </>
-                      )}
-                    </button>
+                      <ArrowLeft className="w-3.5 h-3.5" />
+                      <span>Return to Login</span>
+                    </Link>
                   </div>
                 </div>
               ) : (
@@ -319,7 +321,7 @@ export default function ForgotPasswordPage() {
                       <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                     ) : (
                       <>
-                        <span>Generate Secure Reset Link</span>
+                        <span>Submit Recovery Request to Admin</span>
                         <ArrowRight className="w-4 h-4" />
                       </>
                     )}

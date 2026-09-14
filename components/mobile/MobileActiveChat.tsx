@@ -30,7 +30,17 @@ import {
   Users,
   CornerDownRight,
   X,
+  Check,
+  ShieldAlert,
+  Phone,
+  Video,
+  Download,
 } from 'lucide-react';
+import confetti from 'canvas-confetti';
+import {
+  saveMediaToDevice,
+  handleIncomingMediaAutoDownload,
+} from '@/lib/storage-manager';
 
 interface MobileActiveChatProps {
   conversation: Conversation;
@@ -41,6 +51,7 @@ interface MobileActiveChatProps {
   onTyping?: () => void;
   onBroadcastMessage?: (msg: Message) => void;
   currentTheme?: OnyxTheme;
+  onStartCall?: (conversation: Conversation, type: 'voice' | 'video') => void;
 }
 
 export default function MobileActiveChat({
@@ -52,6 +63,7 @@ export default function MobileActiveChat({
   onTyping,
   onBroadcastMessage,
   currentTheme = 'onyx-pure',
+  onStartCall,
 }: MobileActiveChatProps) {
   const supabase = createClient();
   const activeChannelRef = useRef<any>(null);
@@ -85,6 +97,16 @@ export default function MobileActiveChat({
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
+
+  // Local Request State
+  const [isIncomingRequest, setIsIncomingRequest] = useState(Boolean(conversation.is_incoming_request));
+  const [isOutgoingRequest, setIsOutgoingRequest] = useState(Boolean(conversation.is_outgoing_request));
+  const [requestActionLoading, setRequestActionLoading] = useState(false);
+
+  useEffect(() => {
+    setIsIncomingRequest(Boolean(conversation.is_incoming_request));
+    setIsOutgoingRequest(Boolean(conversation.is_outgoing_request));
+  }, [conversation.id, conversation.is_incoming_request, conversation.is_outgoing_request]);
 
   const isGroup = conversation.type === 'group';
   const isSaved = conversation.type === 'saved';
@@ -282,6 +304,15 @@ export default function MobileActiveChat({
 
       saveCachedMessage(displayMsg);
       setTimeout(() => scrollToBottom('smooth'), 50);
+
+      // WhatsApp-Style Media Auto-Download to Mobile Storage
+      if (incoming.media_url) {
+        handleIncomingMediaAutoDownload({
+          url: incoming.media_url,
+          type: incoming.media_type,
+          filename: incoming.file_name,
+        });
+      }
     });
 
     // 2. WebSocket Broadcast: Message Edited
@@ -341,6 +372,15 @@ export default function MobileActiveChat({
           return next;
         });
       }, 2500);
+    });
+
+    // 5b. WebSocket Broadcast: Request Accepted
+    channel.on('broadcast', { event: 'request_accepted' }, (payload) => {
+      const { conversationId } = payload.payload || {};
+      if (conversationId === conversation.id) {
+        setIsIncomingRequest(false);
+        setIsOutgoingRequest(false);
+      }
     });
 
     // 6. Postgres Changes on messages table
@@ -625,6 +665,73 @@ export default function MobileActiveChat({
     if (longPressTimerRef.current) {
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
+    }
+  };
+
+  // Accept Message Request Handler
+  const handleAcceptRequest = async () => {
+    setRequestActionLoading(true);
+    try {
+      const res = await fetch('/api/chat/requests/accept', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversation_id: conversation.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to accept request');
+
+      setIsIncomingRequest(false);
+      setIsOutgoingRequest(false);
+      playReceiveSound();
+      try {
+        confetti({
+          particleCount: 65,
+          spread: 60,
+          origin: { y: 0.7 },
+        });
+      } catch {}
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('onyx-request-accepted', {
+            detail: { conversationId: conversation.id },
+          })
+        );
+      }
+    } catch (err: any) {
+      alert(err.message || 'Error accepting request');
+    } finally {
+      setRequestActionLoading(false);
+    }
+  };
+
+  // Decline Message Request Handler
+  const handleDeclineRequest = async () => {
+    if (!confirm(`Decline message request from ${partner?.full_name || `@${partner?.username}`}?`)) {
+      return;
+    }
+    setRequestActionLoading(true);
+    try {
+      const res = await fetch('/api/chat/requests/decline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversation_id: conversation.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to decline request');
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('onyx-request-accepted', {
+            detail: { conversationId: conversation.id },
+          })
+        );
+      }
+      onBack();
+    } catch (err: any) {
+      alert(err.message || 'Error declining request');
+    } finally {
+      setRequestActionLoading(false);
     }
   };
 
@@ -1026,6 +1133,28 @@ export default function MobileActiveChat({
             </p>
           </div>
         </div>
+
+        {/* WhatsApp Voice & Video Call Buttons */}
+        {!isSaved && (
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={() => onStartCall?.(conversation, 'voice')}
+              className="p-2 rounded-full text-slate-300 hover:text-white active:bg-white/10 transition-colors"
+              title="Voice Call"
+              aria-label="Voice Call"
+            >
+              <Phone className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => onStartCall?.(conversation, 'video')}
+              className="p-2 rounded-full text-slate-300 hover:text-white active:bg-white/10 transition-colors"
+              title="Video Call"
+              aria-label="Video Call"
+            >
+              <Video className="w-4 h-4" />
+            </button>
+          </div>
+        )}
       </header>
 
       {/* Messages Feed Viewport */}
@@ -1112,82 +1241,131 @@ export default function MobileActiveChat({
         </div>
       )}
 
-      {/* Bottom Message Input Bar */}
-      <div className="p-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom,0px))] bg-[#07080b]/95 backdrop-blur-2xl border-t border-white/10 shrink-0">
-        {isRecording ? (
-          <div className="flex items-center justify-between bg-rose-500/10 border border-rose-500/30 rounded-2xl px-4 py-2.5">
-            <div className="flex items-center gap-2 text-rose-400 text-xs font-mono font-bold animate-pulse">
-              <Mic className="w-4 h-4" />
-              <span>Recording: {recordingSeconds}s</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={cancelVoiceRecording}
-                className="px-3 py-1 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold touch-manipulation"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={stopVoiceRecording}
-                className="px-3 py-1 rounded-xl bg-rose-600 text-white text-xs font-semibold shadow-lg shadow-rose-600/30 touch-manipulation"
-              >
-                Send
-              </button>
-            </div>
+      {/* Bottom Message Input Bar OR Instagram-style Accept/Decline Banner */}
+      {isIncomingRequest ? (
+        <div className="p-4 pb-[max(1rem,env(safe-area-inset-bottom,0px))] bg-[#090b12] border-t border-white/10 shrink-0 space-y-3 animate-slideUp">
+          <div className="text-center space-y-1">
+            <p className="text-xs font-bold text-white flex items-center justify-center gap-1.5">
+              <span>Accept message request from {partner?.full_name || 'User'}?</span>
+              {partnerFounder && <FounderBadge size="sm" />}
+            </p>
+            <p className="text-[11px] text-slate-400 max-w-xs mx-auto leading-relaxed">
+              If you accept, they will be able to message and call you and see info like your activity status and read receipts.
+            </p>
           </div>
-        ) : (
-          <div className="flex items-center gap-2">
-            {/* Attachment Button (+) */}
+
+          <div className="grid grid-cols-2 gap-3 pt-1">
             <button
-              onClick={() => setAttachmentSheetOpen(true)}
-              className="p-2 rounded-2xl bg-white/5 border border-white/10 text-slate-300 hover:text-white active:scale-95 transition-all touch-manipulation shrink-0"
-              title="Add attachment"
-              aria-label="Add attachment"
+              onClick={handleDeclineRequest}
+              disabled={requestActionLoading}
+              className="py-2.5 px-4 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 active:bg-rose-500/30 text-rose-400 border border-rose-500/30 text-xs font-semibold transition-all flex items-center justify-center gap-1.5 touch-manipulation disabled:opacity-50"
             >
-              <Plus className="w-5 h-5" />
+              <X className="w-4 h-4" />
+              <span>Decline</span>
             </button>
 
-            {/* Input Field */}
-            <div className="flex-1 bg-slate-900/90 border border-white/10 rounded-2xl px-3.5 py-2 focus-within:border-brand-500/80 transition-colors flex items-center">
-              <input
-                type="text"
-                value={text}
-                onChange={(e) => {
-                  setText(e.target.value);
-                  handleTyping();
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && text.trim()) {
-                    e.preventDefault();
-                    handleSendMessage(text.trim());
-                  }
-                }}
-                placeholder="Message..."
-                className="w-full bg-transparent text-xs text-white placeholder-slate-500 focus:outline-none"
-              />
-            </div>
-
-            {/* Send or Voice Record Button */}
-            {text.trim() ? (
-              <button
-                onClick={() => handleSendMessage(text.trim())}
-                className="p-2.5 rounded-2xl bg-gradient-to-r from-brand-600 to-indigo-600 text-white shadow-lg shadow-brand-500/25 active:scale-95 transition-transform touch-manipulation shrink-0"
-                aria-label="Send message"
-              >
-                <Send className="w-4 h-4" />
-              </button>
-            ) : (
-              <button
-                onClick={startVoiceRecording}
-                className="p-2.5 rounded-2xl bg-white/5 border border-white/10 text-slate-300 hover:text-white active:scale-95 transition-all touch-manipulation shrink-0"
-                aria-label="Record voice note"
-              >
-                <Mic className="w-4 h-4" />
-              </button>
-            )}
+            <button
+              onClick={handleAcceptRequest}
+              disabled={requestActionLoading}
+              className="py-2.5 px-4 rounded-xl bg-gradient-to-r from-brand-600 via-indigo-600 to-pink-600 hover:from-brand-500 hover:to-pink-500 active:scale-95 text-white text-xs font-bold transition-all shadow-lg shadow-brand-500/30 flex items-center justify-center gap-1.5 touch-manipulation disabled:opacity-50"
+            >
+              {requestActionLoading ? (
+                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              ) : (
+                <>
+                  <Check className="w-4 h-4" />
+                  <span>Accept</span>
+                </>
+              )}
+            </button>
           </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="p-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom,0px))] bg-[#07080b]/95 backdrop-blur-2xl border-t border-white/10 shrink-0">
+          {/* Outgoing Request Banner */}
+          {isOutgoingRequest && (
+            <div className="mb-2 p-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-center">
+              <p className="text-[11px] text-amber-300 font-medium">
+                ⏳ Message request sent to @{partner?.username || 'user'}. They can reply once they accept.
+              </p>
+            </div>
+          )}
+
+          {isRecording ? (
+            <div className="flex items-center justify-between bg-rose-500/10 border border-rose-500/30 rounded-2xl px-4 py-2.5">
+              <div className="flex items-center gap-2 text-rose-400 text-xs font-mono font-bold animate-pulse">
+                <Mic className="w-4 h-4" />
+                <span>Recording: {recordingSeconds}s</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={cancelVoiceRecording}
+                  className="px-3 py-1 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold touch-manipulation"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={stopVoiceRecording}
+                  className="px-3 py-1 rounded-xl bg-rose-600 text-white text-xs font-semibold shadow-lg shadow-rose-600/30 touch-manipulation"
+                >
+                  Send
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              {/* Attachment Button (+) */}
+              <button
+                onClick={() => setAttachmentSheetOpen(true)}
+                className="p-2 rounded-2xl bg-white/5 border border-white/10 text-slate-300 hover:text-white active:scale-95 transition-all touch-manipulation shrink-0"
+                title="Add attachment"
+                aria-label="Add attachment"
+              >
+                <Plus className="w-5 h-5" />
+              </button>
+
+              {/* Input Field */}
+              <div className="flex-1 bg-slate-900/90 border border-white/10 rounded-2xl px-3.5 py-2 focus-within:border-brand-500/80 transition-colors flex items-center">
+                <input
+                  type="text"
+                  value={text}
+                  onChange={(e) => {
+                    setText(e.target.value);
+                    handleTyping();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && text.trim()) {
+                      e.preventDefault();
+                      handleSendMessage(text.trim());
+                    }
+                  }}
+                  placeholder="Message..."
+                  className="w-full bg-transparent text-xs text-white placeholder-slate-500 focus:outline-none"
+                />
+              </div>
+
+              {/* Send or Voice Record Button */}
+              {text.trim() ? (
+                <button
+                  onClick={() => handleSendMessage(text.trim())}
+                  className="p-2.5 rounded-2xl bg-gradient-to-r from-brand-600 to-indigo-600 text-white shadow-lg shadow-brand-500/25 active:scale-95 transition-transform touch-manipulation shrink-0"
+                  aria-label="Send message"
+                >
+                  <Send className="w-4 h-4" />
+                </button>
+              ) : (
+                <button
+                  onClick={startVoiceRecording}
+                  className="p-2.5 rounded-2xl bg-white/5 border border-white/10 text-slate-300 hover:text-white active:scale-95 transition-all touch-manipulation shrink-0"
+                  aria-label="Record voice note"
+                >
+                  <Mic className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Attachment Bottom Sheet */}
       <MobileAttachmentSheet

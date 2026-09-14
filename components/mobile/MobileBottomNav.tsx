@@ -1,9 +1,9 @@
 'use client';
 
 import React from 'react';
-import { MessageSquare, Bookmark, Settings } from 'lucide-react';
+import { MessageSquare, Bookmark, Settings, Video } from 'lucide-react';
 
-export type MobileTab = 'chats' | 'vault' | 'settings';
+export type MobileTab = 'chats' | 'meet' | 'vault' | 'settings';
 
 interface MobileBottomNavProps {
   activeTab: MobileTab;
@@ -18,6 +18,7 @@ export default function MobileBottomNav({
 }: MobileBottomNavProps) {
   const tabs: { id: MobileTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
     { id: 'chats', label: 'Chats', icon: MessageSquare },
+    { id: 'meet', label: 'Meet', icon: Video },
     { id: 'vault', label: 'Vault', icon: Bookmark },
     { id: 'settings', label: 'Settings', icon: Settings },
   ];

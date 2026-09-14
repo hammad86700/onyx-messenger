@@ -66,64 +66,61 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Generate secure single-use 30-minute crypto token
-    const token = crypto.randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-
-    // Invalidate any existing unused reset tokens for this user
+    // Invalidate any existing unused pending requests for this user
     await supabaseAdmin
       .from('password_reset_tokens')
       .update({ is_used: true })
       .eq('user_id', targetProfile.id)
       .eq('is_used', false);
 
-    // Insert new reset token
+    // Generate secure pending request token (prefixed with req_ so it cannot be used directly as a reset token)
+    const requestToken = `req_${crypto.randomBytes(16).toString('hex')}`;
+    const requestId = `OX-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(); // 48 hours
+
     const { error: insertErr } = await supabaseAdmin
       .from('password_reset_tokens')
       .insert({
         user_id: targetProfile.id,
-        token,
+        token: requestToken,
         expires_at: expiresAt,
         is_used: false,
       });
 
     if (insertErr) {
-      console.error('Failed to create reset token:', insertErr);
+      console.error('Failed to log password reset request:', insertErr);
       return NextResponse.json(
-        { error: 'Failed to generate password reset token. Please try again.' },
+        { error: 'Failed to record password reset request. Please try again.' },
         { status: 500 }
       );
     }
 
-    // Determine host
-    const host = request.headers.get('host') || 'localhost:3000';
-    const protocol = request.headers.get('x-forwarded-proto') || 'http';
-    const resetUrl = `${protocol}://${host}/reset-password?token=${token}`;
+    // Pre-filled WhatsApp message for Admin Hammad
+    const adminPhone = '923242779514';
+    const waText = `Assalam o Alaikum / Hello Admin Hammad,
 
-    // Attempt Supabase built-in recovery email as well if configured
-    try {
-      if (targetAuthUser.email) {
-        await supabaseAdmin.auth.admin.generateLink({
-          type: 'recovery',
-          email: targetAuthUser.email,
-        });
-      }
-    } catch (e) {
-      // Ignored if local or rate-limited
-    }
+I requested a password reset for my Onyx Messenger account:
+• Username: @${targetProfile.username}
+• Full Name: ${targetProfile.full_name}
+• Request Ref: ${requestId}
+
+Please verify my account and send me a secure single-use recovery link. Thank you!`;
+
+    const whatsappUrl = `https://wa.me/${adminPhone}?text=${encodeURIComponent(waText)}`;
+    const instagramUrl = 'https://instagram.com/not_urs_hammi';
 
     return NextResponse.json({
       success: true,
-      message: 'Password reset link generated successfully.',
-      token,
-      resetUrl,
-      expiresAt,
+      message: 'Password reset request submitted successfully to Admin.',
+      requestId,
       user: {
         username: targetProfile.username,
         full_name: targetProfile.full_name,
         is_admin: targetProfile.is_admin,
         is_founder: targetProfile.is_founder,
       },
+      whatsappUrl,
+      instagramUrl,
     });
   } catch (err: any) {
     console.error('Forgot password error:', err);
