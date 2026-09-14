@@ -807,8 +807,12 @@ export default function MobileShell({
         </div>
       </nav>
 
-      {/* Pane 1: Feed Pane (Full-screen on Mobile, Fixed Sidebar on Desktop) */}
-      <div className="flex-1 min-h-0 flex flex-col h-full overflow-hidden md:flex-initial md:w-[340px] lg:w-[380px] xl:w-[420px] md:border-r md:border-white/10 shrink-0 relative bg-[#07080b]">
+      {/* Pane 1: Feed Pane (Full-screen on Mobile when no active chat, Sidebar on Desktop) */}
+      <div
+        className={`flex-col h-full overflow-hidden shrink-0 relative bg-[#07080b] ${
+          activeConversation ? 'hidden md:flex' : 'flex flex-1'
+        } md:flex-initial md:w-[340px] lg:w-[380px] xl:w-[420px] md:border-r md:border-white/10`}
+      >
         {/* Header */}
         <MobileHeader
           currentUser={currentUser}
@@ -871,35 +875,15 @@ export default function MobileShell({
         </div>
       </div>
 
-      {/* View 2: Mobile Active Chat Overlay (Slides in from the right ONLY on Mobile < md) */}
+      {/* Pane 2: Detail / Active Chat Pane (Full-screen on Mobile when active, Right Pane on Desktop) */}
       <div
-        className={`md:hidden absolute inset-0 z-30 bg-[#07080b] flex flex-col w-full h-full overflow-hidden transition-all duration-300 ease-out ${
-          activeConversation
-            ? 'translate-x-0 opacity-100 pointer-events-auto visible'
-            : 'translate-x-full opacity-0 pointer-events-none invisible'
+        className={`flex-1 min-w-0 h-full flex-col relative bg-[#050608] overflow-hidden ${
+          activeConversation ? 'flex' : 'hidden md:flex'
         }`}
       >
-        {activeConversation && (
-          <MobileActiveChat
-            key={`mobile-${activeConversation.id}`}
-            conversation={activeConversation}
-            currentUser={currentUser}
-            onlineUserIds={onlineUserIds}
-            onBack={handleBackToFeed}
-            currentTheme={currentTheme}
-            onDeleteConversation={handleDeleteConversation}
-            onClearConversation={handleClearConversation}
-            onStartCall={handleStartCall}
-            onBroadcastMessage={handleBroadcastMessage}
-          />
-        )}
-      </div>
-
-      {/* Pane 2: Desktop Active Chat View or Empty State (Visible ONLY on Desktop >= md) */}
-      <div className="hidden md:flex flex-1 min-w-0 h-full flex-col relative bg-[#050608] overflow-hidden">
         {activeConversation ? (
           <MobileActiveChat
-            key={`desktop-${activeConversation.id}`}
+            key={activeConversation.id}
             conversation={activeConversation}
             currentUser={currentUser}
             onlineUserIds={onlineUserIds}

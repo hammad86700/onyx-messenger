@@ -341,7 +341,7 @@ export default function MobileChatList({
                       </div>
                       <p className="text-[11px] text-slate-400 truncate">
                         {incomingRequests.length === 1
-                          ? `${incomingRequests[0].participants?.find((p) => p.user_id !== currentUser.id)?.profile.full_name || 'Someone'} wants to message you`
+                          ? `${incomingRequests[0].participants?.find((p) => p.user_id !== currentUser.id)?.profile?.full_name || 'Someone'} wants to message you`
                           : `${incomingRequests.length} new requests awaiting review`}
                       </p>
                     </div>

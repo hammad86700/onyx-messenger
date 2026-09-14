@@ -289,6 +289,17 @@ export default function MobileActiveChat({
   // 2. Real-Time Channel: Broadcast & Postgres Changes (Sub-second instant delivery)
   useEffect(() => {
     const channelName = `chat-room:${conversation.id}`;
+
+    // Clean up any stale or lingering channel instance with this topic before creating
+    try {
+      const existing = supabase.getChannels().find(
+        (c: any) => c.topic === `realtime:${channelName}` || c.topic === channelName
+      );
+      if (existing) {
+        supabase.removeChannel(existing);
+      }
+    } catch {}
+
     const channel = supabase.channel(channelName, {
       config: {
         broadcast: { ack: false },
@@ -488,11 +499,17 @@ export default function MobileActiveChat({
       }
     );
 
-    channel.subscribe();
+    try {
+      channel.subscribe();
+    } catch (err) {
+      console.warn('Realtime channel subscription notice:', err);
+    }
 
     return () => {
       activeChannelRef.current = null;
-      supabase.removeChannel(channel);
+      try {
+        supabase.removeChannel(channel);
+      } catch {}
     };
   }, [conversation.id, currentUser.id, supabase]);
 
