@@ -22,6 +22,7 @@ import {
   dismissCallNotification,
   updateAppBadge,
   requestNotificationPermission,
+  syncPushSubscription,
 } from '@/lib/notifications';
 import { handleIncomingMediaAutoDownload } from '@/lib/storage-manager';
 import {
@@ -516,12 +517,18 @@ export default function MobileShell({
     return () => clearInterval(interval);
   }, []);
 
-  // 6. Proactively request browser notification permission on user gesture / interaction
+  // 6. Proactively request browser notification permission on user gesture & sync push subscription
   useEffect(() => {
     if (typeof window !== 'undefined' && 'Notification' in window) {
-      if (Notification.permission === 'default') {
+      if (Notification.permission === 'granted') {
+        syncPushSubscription().catch(() => {});
+      } else if (Notification.permission === 'default') {
         const handleUserGesture = () => {
-          requestNotificationPermission().catch(() => {});
+          requestNotificationPermission()
+            .then((granted) => {
+              if (granted) syncPushSubscription().catch(() => {});
+            })
+            .catch(() => {});
         };
         window.addEventListener('click', handleUserGesture, { once: true });
         window.addEventListener('touchend', handleUserGesture, { once: true });
@@ -531,7 +538,7 @@ export default function MobileShell({
         };
       }
     }
-  }, []);
+  }, [currentUser.id]);
 
   // 7. Auto-dismiss floating notification banner after 6 seconds
   useEffect(() => {
@@ -626,7 +633,7 @@ export default function MobileShell({
       conversationId: conv.id,
     });
 
-    // Send ring notification to recipient channel
+    // 1. Send ring notification to recipient Supabase real-time channel
     const targetChannel = supabase.channel(`user:${partner.id}`);
     targetChannel.subscribe((status) => {
       if (status === 'SUBSCRIBED') {
@@ -645,6 +652,18 @@ export default function MobileShell({
         });
       }
     });
+
+    // 2. Also dispatch OS-level Web Push so phone rings even if app is completely closed
+    fetch('/api/notifications/call', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipientId: partner.id,
+        callId,
+        type,
+        conversationId: conv.id,
+      }),
+    }).catch(() => {});
   };
 
   const handleBroadcastMessage = (sentMsg: Message) => {

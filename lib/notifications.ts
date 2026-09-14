@@ -4,6 +4,9 @@
  */
 
 import { playReceiveSound } from './sound';
+import { syncPushSubscription } from './push-client';
+
+export { syncPushSubscription };
 
 export interface NotificationPayload {
   title: string;
@@ -44,7 +47,11 @@ export async function requestNotificationPermission(): Promise<boolean> {
 
   try {
     const permission = await Notification.requestPermission();
-    return permission === 'granted';
+    const granted = permission === 'granted';
+    if (granted) {
+      syncPushSubscription().catch(() => {});
+    }
+    return granted;
   } catch (err) {
     console.warn('Error requesting notification permission:', err);
     return false;

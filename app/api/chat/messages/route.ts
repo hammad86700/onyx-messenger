@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createClient as createServerSupabase } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
+import { sendPushToUsers } from '@/lib/web-push-server';
 
 export async function GET(request: NextRequest) {
   try {
@@ -302,6 +303,41 @@ export async function POST(request: NextRequest) {
       .from('conversations')
       .update({ updated_at: new Date().toISOString() })
       .eq('id', conversation_id);
+
+    // Trigger OS-level Web Push Notification to all other participants (Works even if mobile app is 100% closed)
+    try {
+      const { data: participants } = await supabaseAdmin
+        .from('conversation_participants')
+        .select('user_id')
+        .eq('conversation_id', conversation_id);
+
+      const recipientIds = (participants || [])
+        .map((p) => p.user_id)
+        .filter((uid) => uid && uid !== user.id);
+
+      if (recipientIds.length > 0) {
+        const senderObj: any = Array.isArray(message.sender) ? message.sender[0] : message.sender;
+        const senderName = senderObj?.full_name || senderObj?.username || 'Onyx User';
+        let snippet = message.content || '';
+        if (message.media_type === 'image') snippet = '📷 Sent a photo';
+        else if (message.media_type === 'voice') snippet = '🎤 Sent a voice message';
+        else if (message.media_type === 'pdf' || message.media_type === 'file') snippet = '📎 Sent an attachment';
+
+        // Fire push in background
+        sendPushToUsers(recipientIds, {
+          title: senderName,
+          body: snippet,
+          icon: senderObj?.avatar_url || '/icon-192.png',
+          badge: '/icon-192.png',
+          tag: `onyx-conv-${conversation_id}`,
+          conversationId: conversation_id,
+          type: 'message',
+          url: `/?conversation=${conversation_id}`,
+        }).catch((err) => console.warn('Background push error:', err));
+      }
+    } catch (e) {
+      console.warn('Failed to dispatch push notifications:', e);
+    }
 
     return NextResponse.json({
       message: {
