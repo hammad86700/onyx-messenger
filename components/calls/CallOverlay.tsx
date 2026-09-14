@@ -68,6 +68,11 @@ export default function CallOverlay({
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const timerRef = useRef<any>(null);
 
+  // Reliable Signaling Queues to eliminate dropped offers and candidate race conditions
+  const iceCandidatesQueueRef = useRef<RTCIceCandidateInit[]>([]);
+  const pendingOfferRef = useRef<RTCSessionDescriptionInit | null>(null);
+  const calleeIsReadyRef = useRef(false);
+
   // 1. Sound handling during ringing/calling
   useEffect(() => {
     if (!call) {
@@ -118,7 +123,19 @@ export default function CallOverlay({
     return `${m}:${s}`;
   };
 
-  // 3. WebRTC lifecycle
+  // Helper to drain queued ICE candidates once remote description is set
+  const drainIceCandidates = (pc: RTCPeerConnection) => {
+    while (iceCandidatesQueueRef.current.length > 0) {
+      const cand = iceCandidatesQueueRef.current.shift();
+      if (cand) {
+        pc.addIceCandidate(new RTCIceCandidate(cand)).catch((e) => {
+          console.warn('Drain ICE candidate notice:', e);
+        });
+      }
+    }
+  };
+
+  // 3. WebRTC lifecycle: Initializes device stream and RTCPeerConnection
   useEffect(() => {
     if (!call || call.status !== 'connected') return;
 
@@ -147,7 +164,7 @@ export default function CallOverlay({
           onIceCandidate: (candidate) => {
             onSendSignal('ice_candidate', {
               callId: call!.callId,
-              candidate,
+              candidate: candidate.toJSON ? candidate.toJSON() : candidate,
             });
           },
           onTrack: (track, streams) => {
@@ -155,9 +172,22 @@ export default function CallOverlay({
             remoteStreamRef.current = remoteStream;
             if (remoteVideoRef.current) {
               remoteVideoRef.current.srcObject = remoteStream;
+              remoteVideoRef.current.play().catch(() => {});
             }
             if (remoteAudioRef.current) {
               remoteAudioRef.current.srcObject = remoteStream;
+              remoteAudioRef.current.play().catch((err) => {
+                console.warn('Audio auto-play notice:', err);
+              });
+            }
+          },
+          onIceConnectionStateChange: (state) => {
+            if (state === 'failed') {
+              try {
+                if ('restartIce' in pc) {
+                  (pc as any).restartIce();
+                }
+              } catch {}
             }
           },
         });
@@ -166,14 +196,33 @@ export default function CallOverlay({
         stream.getTracks().forEach((t) => pc.addTrack(t, stream));
         pcRef.current = pc;
 
-        // Caller initiates SDP offer
-        if (call!.direction === 'outgoing') {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          onSendSignal('call_offer', {
-            callId: call!.callId,
-            sdp: offer,
-          });
+        // Callee: Signal that peer connection and media are ready for offer
+        if (call!.direction === 'incoming') {
+          onSendSignal('callee_ready', { callId: call!.callId });
+
+          // If an offer already arrived while media was initializing, process it immediately
+          if (pendingOfferRef.current) {
+            const sdp = pendingOfferRef.current;
+            pendingOfferRef.current = null;
+            await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+            drainIceCandidates(pc);
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            onSendSignal('call_answer', {
+              callId: call!.callId,
+              sdp: answer,
+            });
+          }
+        } else if (call!.direction === 'outgoing') {
+          // Caller: If callee already emitted ready, create offer immediately
+          if (calleeIsReadyRef.current) {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            onSendSignal('call_offer', {
+              callId: call!.callId,
+              sdp: offer,
+            });
+          }
         }
       } catch (err: any) {
         console.error('WebRTC initialization error:', err);
@@ -192,22 +241,41 @@ export default function CallOverlay({
       stopMediaStream(remoteStreamRef.current);
       localStreamRef.current = null;
       remoteStreamRef.current = null;
+      pendingOfferRef.current = null;
+      calleeIsReadyRef.current = false;
+      iceCandidatesQueueRef.current = [];
     };
   }, [call?.status, call?.callId]);
 
   // 4. Handle incoming WebRTC signals
   useEffect(() => {
-    if (!incomingSignal || !pcRef.current || !call) return;
+    if (!incomingSignal || !call) return;
     const { type, payload } = incomingSignal;
     if (payload?.callId !== call.callId) return;
 
     async function handleSignal() {
       const pc = pcRef.current;
-      if (!pc) return;
 
       try {
-        if (type === 'call_offer' && payload.sdp) {
+        // Callee ready acknowledgment -> Caller initiates SDP offer
+        if (type === 'callee_ready') {
+          calleeIsReadyRef.current = true;
+          if (pc && call?.direction === 'outgoing' && pc.signalingState === 'stable') {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            onSendSignal('call_offer', {
+              callId: call!.callId,
+              sdp: offer,
+            });
+          }
+        } else if (type === 'call_offer' && payload.sdp) {
+          if (!pc) {
+            // Buffer offer until media/PC is initialized
+            pendingOfferRef.current = payload.sdp;
+            return;
+          }
           await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          drainIceCandidates(pc);
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           onSendSignal('call_answer', {
@@ -215,9 +283,17 @@ export default function CallOverlay({
             sdp: answer,
           });
         } else if (type === 'call_answer' && payload.sdp) {
-          await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          if (pc && pc.signalingState === 'have-local-offer') {
+            await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+            drainIceCandidates(pc);
+          }
         } else if (type === 'ice_candidate' && payload.candidate) {
-          await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+          if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+            await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+          } else {
+            // Buffer candidate until remote description is set
+            iceCandidatesQueueRef.current.push(payload.candidate);
+          }
         }
       } catch (err) {
         console.warn('WebRTC signal handling notice:', err);

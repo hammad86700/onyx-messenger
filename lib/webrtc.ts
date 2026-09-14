@@ -6,7 +6,11 @@ export const RTC_CONFIG: RTCConfiguration = {
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
   ],
+  iceCandidatePoolSize: 10,
+  bundlePolicy: 'max-bundle',
 };
 
 export interface DevicePermissionStatus {
@@ -135,6 +139,7 @@ export function createPeerConnection(callbacks: {
   onIceCandidate: (candidate: RTCIceCandidate) => void;
   onTrack: (track: MediaStreamTrack, streams: readonly MediaStream[]) => void;
   onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
+  onIceConnectionStateChange?: (state: RTCIceConnectionState) => void;
 }): RTCPeerConnection {
   const pc = new RTCPeerConnection(RTC_CONFIG);
 
@@ -151,6 +156,12 @@ export function createPeerConnection(callbacks: {
   pc.onconnectionstatechange = () => {
     if (callbacks.onConnectionStateChange) {
       callbacks.onConnectionStateChange(pc.connectionState);
+    }
+  };
+
+  pc.oniceconnectionstatechange = () => {
+    if (callbacks.onIceConnectionStateChange) {
+      callbacks.onIceConnectionStateChange(pc.iceConnectionState);
     }
   };
 

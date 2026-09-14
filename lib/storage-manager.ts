@@ -1,4 +1,11 @@
 // Onyx Media Storage & Auto-Download Engine (WhatsApp-Style Device Persistence)
+import {
+  saveMediaBlob,
+  getMediaBlob,
+  deleteMediaBlob,
+  requestPersistentStorage,
+  getMediaDatabase,
+} from './media-cache';
 
 export interface MediaStorageSettings {
   autoDownloadPhotos: boolean;
@@ -17,8 +24,6 @@ const DEFAULT_SETTINGS: MediaStorageSettings = {
 };
 
 const SETTINGS_KEY = 'onyx_media_storage_settings';
-const DB_NAME = 'onyx_media_cache';
-const STORE_NAME = 'media_blobs';
 
 /**
  * Retrieve user's auto-download settings from localStorage.
@@ -46,106 +51,50 @@ export function saveStorageSettings(settings: Partial<MediaStorageSettings>): Me
   return updated;
 }
 
+export { requestPersistentStorage };
+
 /**
- * Request persistent browser storage so cache is never purged by the OS.
+ * Cache a media blob into IndexedDB (delegated to unified media-cache).
  */
-export async function requestPersistentStorage(): Promise<boolean> {
-  if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.persist) {
-    try {
-      const isPersisted = await navigator.storage.persist();
-      return isPersisted;
-    } catch (e) {
-      console.warn('Storage persist request failed:', e);
-    }
-  }
-  return false;
+export async function cacheMediaBlob(
+  url: string,
+  blob: Blob,
+  filename?: string,
+  messageId?: string
+): Promise<void> {
+  const primaryKey = messageId || url;
+  await saveMediaBlob(primaryKey, blob, url, filename);
 }
 
 /**
- * Open IndexedDB for offline media caching.
+ * Retrieve a cached media blob from IndexedDB (delegated to unified media-cache).
  */
-function openMediaDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    if (typeof window === 'undefined' || !window.indexedDB) {
-      return reject(new Error('IndexedDB not supported'));
-    }
-    const req = window.indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME, { keyPath: 'url' });
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-/**
- * Cache a media blob into IndexedDB.
- */
-export async function cacheMediaBlob(url: string, blob: Blob, filename: string): Promise<void> {
-  try {
-    const db = await openMediaDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.put({
-        url,
-        blob,
-        filename,
-        timestamp: Date.now(),
-        size: blob.size,
-      });
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
-    });
-  } catch (err) {
-    console.warn('IndexedDB cacheMediaBlob failed:', err);
-  }
-}
-
-/**
- * Retrieve a cached media blob from IndexedDB.
- */
-export async function getCachedMediaBlob(url: string): Promise<Blob | null> {
-  try {
-    const db = await openMediaDB();
-    return new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.get(url);
-      req.onsuccess = () => resolve(req.result?.blob || null);
-      req.onerror = () => resolve(null);
-    });
-  } catch {
-    return null;
-  }
+export async function getCachedMediaBlob(urlOrId: string): Promise<Blob | null> {
+  return await getMediaBlob(urlOrId);
 }
 
 /**
  * Save / Download a media file directly to the user's mobile device or desktop storage.
+ * Uses local Blob first so no server bandwidth is consumed.
  */
 export async function saveMediaToDevice(
   url: string,
   preferredFilename?: string,
-  mimeType?: string
+  mimeType?: string,
+  messageId?: string
 ): Promise<boolean> {
   if (typeof window === 'undefined') return false;
 
   try {
-    // 1. Check local IndexedDB cache first
-    let blob = await getCachedMediaBlob(url);
+    // 1. Check local device IndexedDB cache first
+    let blob = (messageId ? await getMediaBlob(messageId) : null) || (await getMediaBlob(url));
 
-    // 2. If not cached, fetch from network
+    // 2. If not cached locally yet, fetch once and cache for future
     if (!blob) {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       blob = await res.blob();
-      // Cache for future instant access
-      if (preferredFilename) {
-        await cacheMediaBlob(url, blob, preferredFilename);
-      }
+      await saveMediaBlob(messageId || url, blob, url, preferredFilename);
     }
 
     const filename =
@@ -153,7 +102,7 @@ export async function saveMediaToDevice(
       url.split('/').pop()?.split('?')[0] ||
       `onyx_media_${Date.now()}.${mimeType ? mimeType.split('/')[1] : 'bin'}`;
 
-    // 3. Fallback to HTML5 anchor blob download (supported on all mobile & desktop browsers)
+    // 3. Trigger direct browser/OS file download to user's device Downloads / Storage
     const blobUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = blobUrl;
@@ -162,15 +111,18 @@ export async function saveMediaToDevice(
     a.rel = 'noopener noreferrer';
     document.body.appendChild(a);
     a.click();
+
     setTimeout(() => {
-      document.body.removeChild(a);
-      URL.revokeObjectURL(blobUrl);
-    }, 1500);
+      try {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(blobUrl);
+      } catch {}
+    }, 2000);
 
     return true;
   } catch (err) {
     console.error('Save media to device error:', err);
-    // Ultimate fallback: open URL in new window
+    // Fallback: open in new window
     window.open(url, '_blank');
     return false;
   }
@@ -178,10 +130,12 @@ export async function saveMediaToDevice(
 
 /**
  * Check whether an incoming media message should auto-download to device storage.
+ * Caches blob into local IndexedDB and optionally triggers file save.
  */
 export async function handleIncomingMediaAutoDownload(media: {
+  id?: string;
   url?: string | null;
-  type?: 'image' | 'voice' | 'pdf' | 'file' | 'text';
+  type?: 'image' | 'voice' | 'pdf' | 'file' | 'text' | string;
   filename?: string | null;
 }): Promise<void> {
   if (!media.url || media.type === 'text') return;
@@ -196,16 +150,19 @@ export async function handleIncomingMediaAutoDownload(media: {
   if (!shouldDownload) return;
 
   try {
-    // Automatically cache blob locally
-    const res = await fetch(media.url);
-    if (res.ok) {
-      const blob = await res.blob();
-      const fn = media.filename || `onyx_${Date.now()}`;
-      await cacheMediaBlob(media.url, blob, fn);
+    // Check if already cached
+    const existing = (media.id ? await getMediaBlob(media.id) : null) || (await getMediaBlob(media.url));
+    if (!existing) {
+      const res = await fetch(media.url);
+      if (res.ok) {
+        const blob = await res.blob();
+        const fn = media.filename || `onyx_${Date.now()}`;
+        await saveMediaBlob(media.id || media.url, blob, media.url, fn);
 
-      // If user enabled direct device storage save, trigger it
-      if (settings.saveToDeviceStorage) {
-        saveMediaToDevice(media.url, fn);
+        // If user enabled direct device storage save, trigger it
+        if (settings.saveToDeviceStorage) {
+          saveMediaToDevice(media.url, fn, blob.type, media.id);
+        }
       }
     }
   } catch (err) {
@@ -233,10 +190,11 @@ export async function getStorageUsage(): Promise<{ usedMB: string; quotaMB: stri
  */
 export async function clearMediaCache(): Promise<boolean> {
   try {
-    const db = await openMediaDB();
+    const db = await getMediaDatabase();
+    if (!db) return false;
     return new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
+      const tx = db.transaction('media_blobs', 'readwrite');
+      const store = tx.objectStore('media_blobs');
       const req = store.clear();
       req.onsuccess = () => resolve(true);
       req.onerror = () => resolve(false);

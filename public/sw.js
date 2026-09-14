@@ -1,5 +1,5 @@
-// Onyx Service Worker for PWA Installation and Standalone App Mode
-const CACHE_NAME = 'onyx-cache-v1.0.0';
+// Onyx Service Worker: Background PWA, Rich Notifications & Web Push Engine
+const CACHE_NAME = 'onyx-cache-v1.1.0';
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
@@ -7,13 +7,16 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
-        keys.map((key) => {
-          if (key !== CACHE_NAME) return caches.delete(key);
-        })
+    caches
+      .keys()
+      .then((keys) =>
+        Promise.all(
+          keys.map((key) => {
+            if (key !== CACHE_NAME) return caches.delete(key);
+          })
+        )
       )
-    ).then(() => self.clients.claim())
+      .then(() => self.clients.claim())
   );
 });
 
@@ -48,32 +51,91 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-// Handle Notification Clicks to focus or open Onyx chat
+// Real-Time Background Push Notifications (WhatsApp & Instagram style)
+self.addEventListener('push', (event) => {
+  let data = {};
+  if (event.data) {
+    try {
+      data = event.data.json();
+    } catch {
+      data = { body: event.data.text() };
+    }
+  }
+
+  const title = data.title || 'Onyx Messenger';
+  const isCall = data.type === 'call' || data.isCall;
+
+  const options = {
+    body: data.body || (isCall ? 'Incoming call...' : 'New message received'),
+    icon: data.icon || '/icon-192.png',
+    badge: data.badge || '/icon-192.png',
+    tag: data.tag || (isCall ? 'onyx-incoming-call' : `onyx-conv-${data.conversationId || 'feed'}`),
+    data: data,
+    requireInteraction: Boolean(isCall),
+    renotify: true,
+    vibrate: isCall
+      ? [500, 200, 500, 200, 500, 200, 500, 200]
+      : [200, 100, 200],
+    actions: isCall
+      ? [
+          { action: 'answer', title: '📞 Answer' },
+          { action: 'decline', title: '❌ Decline' },
+        ]
+      : [
+          { action: 'open', title: '💬 Open Chat' },
+        ],
+  };
+
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+// Handle Notification Clicks (Action Center / Notification Tray)
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const data = event.notification.data || {};
-  const conversationId = data.conversationId;
+  const action = event.action;
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
-      // If a window is already open, focus it and notify of target conversation
+      // 1. If an existing window is open, focus it and dispatch navigation/call action
       for (const client of clientList) {
         if ('focus' in client) {
-          client.focus();
-          if (conversationId) {
-            client.postMessage({
-              type: 'NAVIGATE_CONVERSATION',
-              conversationId: conversationId,
-            });
-          }
-          return;
+          return client.focus().then(() => {
+            if (action === 'answer' || action === 'decline') {
+              client.postMessage({
+                type: 'CALL_NOTIFICATION_ACTION',
+                action,
+                callId: data.callId,
+              });
+            } else if (data.conversationId) {
+              client.postMessage({
+                type: 'NAVIGATE_CONVERSATION',
+                conversationId: data.conversationId,
+              });
+            }
+          });
         }
       }
-      // If no window is open, open a new one
+
+      // 2. If no window is currently open, open a new window
       if (self.clients.openWindow) {
-        return self.clients.openWindow(data.url || '/');
+        const destination = data.conversationId ? `/?conversation=${data.conversationId}` : '/';
+        return self.clients.openWindow(destination);
       }
     })
   );
 });
 
+// Listen to messages from window to keep alive or update badges
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SET_BADGE') {
+    if (self.navigator && 'setAppBadge' in self.navigator) {
+      const count = event.data.count || 0;
+      if (count > 0) {
+        self.navigator.setAppBadge(count).catch(() => {});
+      } else {
+        self.navigator.clearAppBadge().catch(() => {});
+      }
+    }
+  }
+});

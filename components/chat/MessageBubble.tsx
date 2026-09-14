@@ -5,6 +5,8 @@ import { Message, Profile, MessageReactionSummary, isFounder, OnyxTheme } from '
 import { formatMessageTime, formatFileSize } from '@/lib/utils';
 import FounderBadge from './FounderBadge';
 import MessageContent from './MessageContent';
+import { resolveLocalMediaUrl } from '@/lib/media-cache';
+import { saveMediaToDevice } from '@/lib/storage-manager';
 import {
   FileText,
   Download,
@@ -115,6 +117,25 @@ export default function MessageBubble({
 
   const isViewOnce = message.view_once_viewed !== null && typeof message.view_once_viewed !== 'undefined';
   const isViewOnceExpired = message.view_once_viewed === true;
+
+  // Zero-Server-Load: resolve media locally from IndexedDB device storage
+  const [localMediaUrl, setLocalMediaUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isSubscribed = true;
+    if (message.media_url) {
+      resolveLocalMediaUrl(message.id, message.media_url).then((resolved) => {
+        if (isSubscribed && resolved) {
+          setLocalMediaUrl(resolved);
+        }
+      });
+    }
+    return () => {
+      isSubscribed = false;
+    };
+  }, [message.id, message.media_url]);
+
+  const effectiveMediaUrl = localMediaUrl || message.media_url;
 
   const getFileName = (url: string) => {
     if (message.file_name) return message.file_name;
@@ -381,7 +402,7 @@ export default function MessageBubble({
                 <div className="mb-2 p-2.5 rounded-xl bg-slate-950/75 border border-white/10 flex items-center gap-2.5 sm:gap-3 w-full max-w-[270px] sm:max-w-xs">
                   <audio
                     ref={audioRef}
-                    src={message.media_url}
+                    src={effectiveMediaUrl || undefined}
                     preload="metadata"
                     onLoadedMetadata={handleLoadedMetadata}
                     onTimeUpdate={handleTimeUpdate}
@@ -486,7 +507,7 @@ export default function MessageBubble({
               {message.media_url && isImage && !isViewOnce && (
                 <div className="mb-2 relative rounded-xl overflow-hidden group cursor-pointer border border-white/10 bg-slate-950/40">
                   <img
-                    src={message.media_url}
+                    src={effectiveMediaUrl || message.media_url}
                     alt="Chat attachment"
                     onClick={() => setImageModalOpen(true)}
                     className="max-h-72 max-w-full rounded-xl object-cover hover:scale-[1.01] transition-transform duration-200"
@@ -530,16 +551,24 @@ export default function MessageBubble({
                     </div>
                   </div>
 
-                  <a
-                    href={message.media_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    download
-                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors shrink-0"
-                    title="Download File"
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (message.media_url) {
+                        saveMediaToDevice(
+                          message.media_url,
+                          getFileName(message.media_url),
+                          isPdf ? 'application/pdf' : undefined,
+                          message.id
+                        );
+                      }
+                    }}
+                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors shrink-0 touch-manipulation active:scale-95"
+                    title="Save to Device Storage"
                   >
                     <Download className="w-4 h-4" />
-                  </a>
+                  </button>
                 </div>
               )}
 
@@ -783,26 +812,34 @@ export default function MessageBubble({
             className="relative max-w-4xl max-h-[90vh] flex flex-col items-center"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="absolute top-3 right-3 flex items-center gap-2 z-10">
-              <a
-                href={message.media_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                download
-                className="p-2 rounded-full bg-black/60 hover:bg-black/90 text-white transition-colors border border-white/20"
-                title="Download image"
+            <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (message.media_url) {
+                    saveMediaToDevice(
+                      message.media_url,
+                      getFileName(message.media_url),
+                      'image/jpeg',
+                      message.id
+                    );
+                  }
+                }}
+                className="p-2 rounded-full bg-black/60 text-white hover:bg-black/80 transition-colors shadow-lg backdrop-blur-md touch-manipulation active:scale-95"
+                title="Save photo to device"
               >
                 <Download className="w-4 h-4" />
-              </a>
+              </button>
               <button
                 onClick={() => setImageModalOpen(false)}
-                className="p-2 rounded-full bg-black/60 hover:bg-black/90 text-white transition-colors border border-white/20"
+                className="p-2 rounded-full bg-black/60 text-white hover:bg-black/80 transition-colors shadow-lg backdrop-blur-md touch-manipulation active:scale-95"
+                title="Close"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
             <img
-              src={message.media_url}
+              src={effectiveMediaUrl || message.media_url}
               alt="Full size preview"
               className="max-h-[85vh] max-w-full rounded-2xl object-contain shadow-2xl border border-white/10"
             />

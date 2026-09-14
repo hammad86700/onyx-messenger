@@ -1,21 +1,39 @@
 /**
- * Local-Device Media Caching (WhatsApp Model) for Onyx.
- * Stores binary Blobs in IndexedDB keyed by message_id.
+ * Onyx Zero-Server-Load Local Media Caching Engine (WhatsApp-Style Device Persistence)
+ * Stores binary Blobs in IndexedDB keyed by message_id and url.
  * Resolves media to local ObjectURLs (URL.createObjectURL(blob)) with 0 network requests on replay.
  */
 
-const DB_NAME = 'onyx_media_cache';
+const DB_NAME = 'onyx_media_cache_v2';
 const DB_VERSION = 1;
 const STORE_NAME = 'media_blobs';
 
 const inMemoryUrlMap = new Map<string, string>();
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 
-function isIndexedDBAvailable(): boolean {
+export function isIndexedDBAvailable(): boolean {
   return typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined';
 }
 
-function getMediaDatabase(): Promise<IDBDatabase | null> {
+/**
+ * Request OS-level persistent browser storage so user's cached media is never pruned by the OS.
+ */
+export async function requestPersistentStorage(): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.persist) {
+    try {
+      const isPersisted = await navigator.storage.persist();
+      return isPersisted;
+    } catch (e) {
+      console.warn('Storage persist request notice:', e);
+    }
+  }
+  return false;
+}
+
+/**
+ * Open or initialize IndexedDB for local device media caching.
+ */
+export function getMediaDatabase(): Promise<IDBDatabase | null> {
   if (!isIndexedDBAvailable()) return Promise.resolve(null);
   if (dbPromise) return dbPromise;
 
@@ -26,15 +44,23 @@ function getMediaDatabase(): Promise<IDBDatabase | null> {
       request.onupgradeneeded = (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
-          db.createObjectStore(STORE_NAME, { keyPath: 'message_id' });
+          const store = db.createObjectStore(STORE_NAME, { keyPath: 'key' });
+          store.createIndex('message_id', 'message_id', { unique: false });
+          store.createIndex('url', 'url', { unique: false });
         }
       };
 
-      request.onsuccess = () => resolve(request.result);
+      request.onsuccess = () => {
+        // Request storage persistence in the background
+        requestPersistentStorage().catch(() => {});
+        resolve(request.result);
+      };
+
       request.onerror = (e) => {
         console.warn('Failed to open media cache IndexedDB:', e);
         resolve(null);
       };
+
       request.onblocked = () => resolve(null);
     } catch {
       resolve(null);
@@ -44,30 +70,71 @@ function getMediaDatabase(): Promise<IDBDatabase | null> {
   return dbPromise;
 }
 
+export interface CachedMediaRecord {
+  key: string;
+  message_id?: string;
+  url: string;
+  blob: Blob;
+  mime_type: string;
+  filename?: string;
+  size: number;
+  timestamp: number;
+}
+
 /**
- * Save a binary media Blob to local device IndexedDB storage
+ * Save a binary media Blob to local device IndexedDB storage.
  */
-export async function saveMediaBlob(messageId: string, blob: Blob): Promise<void> {
-  if (!messageId || !blob) return;
+export async function saveMediaBlob(
+  identifier: string,
+  blob: Blob,
+  remoteUrl?: string,
+  filename?: string
+): Promise<void> {
+  if (!identifier || !blob) return;
   const db = await getMediaDatabase();
   if (!db) return;
+
+  const primaryKey = identifier;
+  const targetUrl = remoteUrl || (identifier.startsWith('http') ? identifier : '');
+  const messageId = !identifier.startsWith('http') ? identifier : undefined;
 
   return new Promise((resolve) => {
     try {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
-      store.put({
+
+      const record: CachedMediaRecord = {
+        key: primaryKey,
         message_id: messageId,
+        url: targetUrl,
         blob,
-        mime_type: blob.type,
+        mime_type: blob.type || 'application/octet-stream',
+        filename,
+        size: blob.size,
         timestamp: Date.now(),
-      });
+      };
+
+      store.put(record);
+
+      // If both messageId and remoteUrl exist, also index by url for instant cross-lookup
+      if (messageId && targetUrl && targetUrl !== primaryKey) {
+        store.put({
+          ...record,
+          key: targetUrl,
+        });
+      }
+
       tx.oncomplete = () => {
-        // Cache object URL in memory
-        const objUrl = URL.createObjectURL(blob);
-        inMemoryUrlMap.set(messageId, objUrl);
+        // Cache object URL in memory for 0ms synchronous access
+        try {
+          const objUrl = URL.createObjectURL(blob);
+          inMemoryUrlMap.set(primaryKey, objUrl);
+          if (targetUrl) inMemoryUrlMap.set(targetUrl, objUrl);
+          if (messageId) inMemoryUrlMap.set(messageId, objUrl);
+        } catch {}
         resolve();
       };
+
       tx.onerror = () => resolve();
     } catch {
       resolve();
@@ -76,10 +143,10 @@ export async function saveMediaBlob(messageId: string, blob: Blob): Promise<void
 }
 
 /**
- * Retrieve a binary media Blob from local device IndexedDB storage
+ * Retrieve a binary media Blob from local device IndexedDB storage.
  */
-export async function getMediaBlob(messageId: string): Promise<Blob | null> {
-  if (!messageId) return null;
+export async function getMediaBlob(identifier: string): Promise<Blob | null> {
+  if (!identifier) return null;
   const db = await getMediaDatabase();
   if (!db) return null;
 
@@ -87,12 +154,39 @@ export async function getMediaBlob(messageId: string): Promise<Blob | null> {
     try {
       const tx = db.transaction(STORE_NAME, 'readonly');
       const store = tx.objectStore(STORE_NAME);
-      const req = store.get(messageId);
+
+      // 1. Try direct primary key lookup
+      const req = store.get(identifier);
 
       req.onsuccess = () => {
         if (req.result && req.result.blob) {
           resolve(req.result.blob as Blob);
-        } else {
+          return;
+        }
+
+        // 2. Try index lookups if primary key didn't hit
+        try {
+          const urlIndex = store.index('url');
+          const urlReq = urlIndex.get(identifier);
+          urlReq.onsuccess = () => {
+            if (urlReq.result && urlReq.result.blob) {
+              resolve(urlReq.result.blob as Blob);
+              return;
+            }
+
+            const msgIndex = store.index('message_id');
+            const msgReq = msgIndex.get(identifier);
+            msgReq.onsuccess = () => {
+              if (msgReq.result && msgReq.result.blob) {
+                resolve(msgReq.result.blob as Blob);
+              } else {
+                resolve(null);
+              }
+            };
+            msgReq.onerror = () => resolve(null);
+          };
+          urlReq.onerror = () => resolve(null);
+        } catch {
           resolve(null);
         }
       };
@@ -111,7 +205,7 @@ export async function getMediaBlob(messageId: string): Promise<Blob | null> {
  * 3. If missing, downloads binary Blob in background and persists to IndexedDB.
  */
 export async function resolveLocalMediaUrl(
-  messageId: string,
+  messageId: string | undefined,
   remoteUrl: string | null
 ): Promise<string | null> {
   if (!remoteUrl) return null;
@@ -122,20 +216,23 @@ export async function resolveLocalMediaUrl(
   }
 
   // 1. Check in-memory object URL cache
-  const memoryCached = inMemoryUrlMap.get(messageId);
-  if (memoryCached) {
-    return memoryCached;
+  if (messageId && inMemoryUrlMap.has(messageId)) {
+    return inMemoryUrlMap.get(messageId)!;
+  }
+  if (inMemoryUrlMap.has(remoteUrl)) {
+    return inMemoryUrlMap.get(remoteUrl)!;
   }
 
-  // 2. Check local device IndexedDB
-  const cachedBlob = await getMediaBlob(messageId);
+  // 2. Check local device IndexedDB storage
+  const cachedBlob = (messageId ? await getMediaBlob(messageId) : null) || (await getMediaBlob(remoteUrl));
   if (cachedBlob) {
     const localUrl = URL.createObjectURL(cachedBlob);
-    inMemoryUrlMap.set(messageId, localUrl);
+    if (messageId) inMemoryUrlMap.set(messageId, localUrl);
+    inMemoryUrlMap.set(remoteUrl, localUrl);
     return localUrl;
   }
 
-  // 3. Concurrently fetch and cache binary blob in the background
+  // 3. Concurrently fetch and cache binary blob in device storage
   try {
     fetch(remoteUrl)
       .then((res) => {
@@ -143,26 +240,27 @@ export async function resolveLocalMediaUrl(
         return res.blob();
       })
       .then((blob) => {
-        saveMediaBlob(messageId, blob);
+        const id = messageId || remoteUrl;
+        saveMediaBlob(id, blob, remoteUrl);
       })
       .catch(() => {});
-  } catch {
-    // Return remoteUrl fallback
-  }
+  } catch {}
 
   return remoteUrl;
 }
 
 /**
- * Delete a media blob from local device storage
+ * Delete a media blob from local device storage.
  */
-export async function deleteMediaBlob(messageId: string): Promise<void> {
-  if (!messageId) return;
+export async function deleteMediaBlob(identifier: string): Promise<void> {
+  if (!identifier) return;
 
-  const existingUrl = inMemoryUrlMap.get(messageId);
+  const existingUrl = inMemoryUrlMap.get(identifier);
   if (existingUrl) {
-    URL.revokeObjectURL(existingUrl);
-    inMemoryUrlMap.delete(messageId);
+    try {
+      URL.revokeObjectURL(existingUrl);
+    } catch {}
+    inMemoryUrlMap.delete(identifier);
   }
 
   const db = await getMediaDatabase();
@@ -172,7 +270,7 @@ export async function deleteMediaBlob(messageId: string): Promise<void> {
     try {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
-      store.delete(messageId);
+      store.delete(identifier);
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
     } catch {

@@ -500,6 +500,16 @@ export default function MobileActiveChat({
       });
 
       saveCachedMessage(displayMsg);
+
+      if (incoming.media_url) {
+        handleIncomingMediaAutoDownload({
+          id: incoming.id,
+          url: incoming.media_url,
+          type: incoming.media_type,
+          filename: incoming.file_name,
+        });
+      }
+
       setTimeout(() => scrollToBottom('smooth'), 50);
     };
 

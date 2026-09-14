@@ -63,35 +63,78 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    // 1. Delete user reactions
+    // 1. Kick active user session immediately via real-time channel
+    try {
+      const userKickChannel = supabaseAdmin.channel(`user:${targetUserId}`);
+      await userKickChannel.send({
+        type: 'broadcast',
+        event: 'account_deleted',
+        payload: { user_id: targetUserId },
+      });
+      supabaseAdmin.removeChannel(userKickChannel);
+    } catch (e) {
+      console.warn('Realtime kick broadcast notice:', e);
+    }
+
+    // 2. Delete password reset tokens
+    try {
+      await supabaseAdmin.from('password_reset_tokens').delete().eq('user_id', targetUserId);
+    } catch (e) {
+      console.warn('Reset tokens cleanup notice:', e);
+    }
+
+    // 3. Delete user reactions
     try {
       await supabaseAdmin.from('message_reactions').delete().eq('user_id', targetUserId);
     } catch (e) {
       console.warn('Reactions cleanup notice:', e);
     }
 
-    // 2. Delete user starred messages
+    // 4. Delete user starred messages
     try {
       await supabaseAdmin.from('starred_messages').delete().eq('user_id', targetUserId);
     } catch (e) {
       console.warn('Starred cleanup notice:', e);
     }
 
-    // 3. Delete user sent messages
+    // 5. Delete user sent messages
     try {
       await supabaseAdmin.from('messages').delete().eq('sender_id', targetUserId);
     } catch (e) {
       console.warn('Messages cleanup notice:', e);
     }
 
-    // 4. Delete user conversation memberships
+    // 6. Clean up conversations created by this user to satisfy foreign key constraints
+    try {
+      await supabaseAdmin
+        .from('conversations')
+        .update({ created_by: null })
+        .eq('created_by', targetUserId);
+    } catch (e) {
+      console.warn('Conversations created_by cleanup notice:', e);
+    }
+
+    // 7. Delete user conversation memberships
     try {
       await supabaseAdmin.from('conversation_participants').delete().eq('user_id', targetUserId);
     } catch (e) {
       console.warn('Participants cleanup notice:', e);
     }
 
-    // 5. Delete user profile record
+    // 8. Clean up user avatar file from avatars bucket
+    try {
+      if (targetProfile?.avatar_url) {
+        const urlParts = targetProfile.avatar_url.split('/');
+        const fileName = urlParts[urlParts.length - 1];
+        if (fileName) {
+          await supabaseAdmin.storage.from('avatars').remove([fileName, `${targetUserId}/${fileName}`]);
+        }
+      }
+    } catch (e) {
+      console.warn('Avatar storage cleanup notice:', e);
+    }
+
+    // 9. Delete user profile record
     const { error: profileDeleteErr } = await supabaseAdmin
       .from('profiles')
       .delete()
@@ -101,11 +144,10 @@ export async function DELETE(request: NextRequest) {
       console.error('Profile deletion error:', profileDeleteErr);
     }
 
-    // 6. Permanently delete user from Supabase Auth
+    // 10. Permanently delete user from Supabase Auth
     const { error: authDeleteErr } = await supabaseAdmin.auth.admin.deleteUser(targetUserId);
     if (authDeleteErr) {
       console.error('Auth user deletion error:', authDeleteErr);
-      // Even if auth fails because user was already deleted, profile is removed
     }
 
     return NextResponse.json({

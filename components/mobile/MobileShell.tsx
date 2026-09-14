@@ -16,7 +16,14 @@ import ChangePasswordModal from '@/components/chat/ChangePasswordModal';
 import NewGroupModal from '@/components/chat/NewGroupModal';
 import { saveCachedMessage } from '@/lib/chat-cache';
 import { playReceiveSound } from '@/lib/sound';
-import { sendSystemNotification, requestNotificationPermission } from '@/lib/notifications';
+import {
+  sendSystemNotification,
+  sendCallNotification,
+  dismissCallNotification,
+  updateAppBadge,
+  requestNotificationPermission,
+} from '@/lib/notifications';
+import { handleIncomingMediaAutoDownload } from '@/lib/storage-manager';
 import { X } from 'lucide-react';
 import CallOverlay, { ActiveCallState } from '@/components/calls/CallOverlay';
 import OnyxMeetView from '@/components/calls/OnyxMeetView';
@@ -60,6 +67,7 @@ export default function MobileShell({
   // 1-on-1 Call State
   const [activeCall, setActiveCall] = useState<ActiveCallState | null>(null);
   const [incomingSignal, setIncomingSignal] = useState<{ type: string; payload: any } | null>(null);
+  const callChannelRef = useRef<any>(null);
 
   // Theme
   const [currentTheme, setCurrentTheme] = useState<OnyxTheme>('onyx-pure');
@@ -219,6 +227,16 @@ export default function MobileShell({
 
       // Cache in IndexedDB
       saveCachedMessage(newMsg);
+
+      // Auto-save media to user's device storage in background (Zero Server Load)
+      if (newMsg.media_url) {
+        handleIncomingMediaAutoDownload({
+          id: newMsg.id,
+          url: newMsg.media_url,
+          type: newMsg.media_type,
+          filename: newMsg.file_name,
+        });
+      }
     };
 
     const channelName = `user:${currentUser.id}`;
@@ -279,7 +297,7 @@ export default function MobileShell({
       fetchConversations();
     });
 
-    // Real-Time 1-on-1 Call Signaling Listeners
+    // Real-Time 1-on-1 Call Signaling Listeners (Ring Alert)
     channel.on('broadcast', { event: 'call_ring' }, (payload) => {
       const data = payload.payload;
       if (data?.recipientId === currentUser.id && data?.call) {
@@ -288,31 +306,26 @@ export default function MobileShell({
           direction: 'incoming',
           status: 'ringing',
         });
+
+        // Trigger immediate high-priority OS Action Center / Notification Tray alert with ringtone & vibration
+        sendCallNotification({
+          callerName: data.call.partner?.full_name || 'Onyx User',
+          callerAvatar: data.call.partner?.avatar_url,
+          callId: data.call.callId,
+          type: data.call.type,
+          conversationId: data.call.conversationId,
+        });
       }
     });
 
-    channel.on('broadcast', { event: 'call_answer' }, (payload) => {
-      const data = payload.payload;
-      setActiveCall((prev) => (prev ? { ...prev, status: 'connected' } : null));
-      setIncomingSignal({ type: 'call_answer', payload: data });
-    });
-
-    channel.on('broadcast', { event: 'call_offer' }, (payload) => {
-      setIncomingSignal({ type: 'call_offer', payload: payload.payload });
-    });
-
-    channel.on('broadcast', { event: 'ice_candidate' }, (payload) => {
-      setIncomingSignal({ type: 'ice_candidate', payload: payload.payload });
-    });
-
-    channel.on('broadcast', { event: 'call_reject' }, () => {
-      setActiveCall(null);
-      setIncomingSignal(null);
-    });
-
-    channel.on('broadcast', { event: 'call_end' }, () => {
-      setActiveCall(null);
-      setIncomingSignal(null);
+    // Real-Time Admin Kick Listener (Immediately kick user if account deleted)
+    channel.on('broadcast', { event: 'account_deleted' }, () => {
+      if (typeof window !== 'undefined') {
+        alert('Your Onyx account has been removed by an administrator.');
+        localStorage.clear();
+        sessionStorage.clear();
+        window.location.href = '/login';
+      }
     });
 
     channel.subscribe();
@@ -322,6 +335,57 @@ export default function MobileShell({
       supabase.removeChannel(channel);
     };
   }, [currentUser.id, supabase]);
+
+  // 2b. Dedicated Call Room Signaling Channel (Zero-drop peer-to-peer channel)
+  useEffect(() => {
+    if (!activeCall?.callId) {
+      if (callChannelRef.current) {
+        supabase.removeChannel(callChannelRef.current);
+        callChannelRef.current = null;
+      }
+      return;
+    }
+
+    const roomName = `call-signaling:${activeCall.callId}`;
+    const callChannel = supabase.channel(roomName, {
+      config: { broadcast: { ack: false } },
+    });
+
+    callChannel
+      .on('broadcast', { event: 'callee_ready' }, (payload) => {
+        setIncomingSignal({ type: 'callee_ready', payload: payload.payload });
+      })
+      .on('broadcast', { event: 'call_offer' }, (payload) => {
+        setIncomingSignal({ type: 'call_offer', payload: payload.payload });
+      })
+      .on('broadcast', { event: 'call_answer' }, (payload) => {
+        setActiveCall((prev) => (prev ? { ...prev, status: 'connected' } : null));
+        setIncomingSignal({ type: 'call_answer', payload: payload.payload });
+      })
+      .on('broadcast', { event: 'ice_candidate' }, (payload) => {
+        setIncomingSignal({ type: 'ice_candidate', payload: payload.payload });
+      })
+      .on('broadcast', { event: 'call_reject' }, () => {
+        dismissCallNotification();
+        setActiveCall(null);
+        setIncomingSignal(null);
+      })
+      .on('broadcast', { event: 'call_end' }, () => {
+        dismissCallNotification();
+        setActiveCall(null);
+        setIncomingSignal(null);
+      });
+
+    callChannel.subscribe();
+    callChannelRef.current = callChannel;
+
+    return () => {
+      if (callChannelRef.current) {
+        supabase.removeChannel(callChannelRef.current);
+        callChannelRef.current = null;
+      }
+    };
+  }, [activeCall?.callId, supabase]);
 
   // 3. Auto-dismiss in-app floating banner after 5s
   useEffect(() => {
@@ -335,7 +399,23 @@ export default function MobileShell({
   // 4. Background Service Worker & Custom Window Notification Clicks
   useEffect(() => {
     const handleServiceWorkerMessage = (event: MessageEvent) => {
-      if (event.data?.type === 'NAVIGATE_CONVERSATION' && event.data?.conversationId) {
+      if (event.data?.type === 'CALL_NOTIFICATION_ACTION') {
+        if (event.data.action === 'answer') {
+          dismissCallNotification();
+          setActiveCall((prev) => (prev ? { ...prev, status: 'connected' } : null));
+        } else if (event.data.action === 'decline') {
+          dismissCallNotification();
+          if (callChannelRef.current && activeCall) {
+            callChannelRef.current.send({
+              type: 'broadcast',
+              event: 'call_reject',
+              payload: { callId: activeCall.callId },
+            });
+          }
+          setActiveCall(null);
+          setIncomingSignal(null);
+        }
+      } else if (event.data?.type === 'NAVIGATE_CONVERSATION' && event.data?.conversationId) {
         const target = conversationsRef.current.find((c) => c.id === event.data.conversationId);
         if (target) {
           handleSelectConversation(target);
@@ -399,11 +479,15 @@ export default function MobileShell({
     }
   }, []);
 
-  // Total unread count
+  // Total unread count and app badge synchronization
   const totalUnreadCount = conversations.reduce(
     (acc, c) => acc + (c.unread_count || 0),
     0
   );
+
+  useEffect(() => {
+    updateAppBadge(totalUnreadCount);
+  }, [totalUnreadCount]);
 
   // Handle open conversation
   const handleSelectConversation = (conv: Conversation) => {
@@ -678,62 +762,48 @@ export default function MobileShell({
           currentUser={currentUser}
           onAcceptCall={() => {
             if (!activeCall) return;
+            dismissCallNotification();
             setActiveCall((prev) => (prev ? { ...prev, status: 'connected' } : null));
-            const targetChannel = supabase.channel(`user:${activeCall.partner.id}`);
-            targetChannel.subscribe((status) => {
-              if (status === 'SUBSCRIBED') {
-                targetChannel.send({
-                  type: 'broadcast',
-                  event: 'call_answer',
-                  payload: { callId: activeCall.callId },
-                });
-              }
-            });
+            if (callChannelRef.current) {
+              callChannelRef.current.send({
+                type: 'broadcast',
+                event: 'call_answer',
+                payload: { callId: activeCall.callId },
+              });
+            }
           }}
           onRejectCall={() => {
-            if (activeCall) {
-              const targetChannel = supabase.channel(`user:${activeCall.partner.id}`);
-              targetChannel.subscribe((status) => {
-                if (status === 'SUBSCRIBED') {
-                  targetChannel.send({
-                    type: 'broadcast',
-                    event: 'call_reject',
-                    payload: { callId: activeCall.callId },
-                  });
-                }
+            dismissCallNotification();
+            if (callChannelRef.current && activeCall) {
+              callChannelRef.current.send({
+                type: 'broadcast',
+                event: 'call_reject',
+                payload: { callId: activeCall.callId },
               });
             }
             setActiveCall(null);
             setIncomingSignal(null);
           }}
           onEndCall={() => {
-            if (activeCall) {
-              const targetChannel = supabase.channel(`user:${activeCall.partner.id}`);
-              targetChannel.subscribe((status) => {
-                if (status === 'SUBSCRIBED') {
-                  targetChannel.send({
-                    type: 'broadcast',
-                    event: 'call_end',
-                    payload: { callId: activeCall.callId },
-                  });
-                }
+            dismissCallNotification();
+            if (callChannelRef.current && activeCall) {
+              callChannelRef.current.send({
+                type: 'broadcast',
+                event: 'call_end',
+                payload: { callId: activeCall.callId },
               });
             }
             setActiveCall(null);
             setIncomingSignal(null);
           }}
           onSendSignal={(type, payload) => {
-            if (!activeCall) return;
-            const targetChannel = supabase.channel(`user:${activeCall.partner.id}`);
-            targetChannel.subscribe((status) => {
-              if (status === 'SUBSCRIBED') {
-                targetChannel.send({
-                  type: 'broadcast',
-                  event: type,
-                  payload,
-                });
-              }
-            });
+            if (callChannelRef.current) {
+              callChannelRef.current.send({
+                type: 'broadcast',
+                event: type,
+                payload,
+              });
+            }
           }}
           incomingSignal={incomingSignal}
         />
