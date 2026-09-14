@@ -24,7 +24,15 @@ import {
   requestNotificationPermission,
 } from '@/lib/notifications';
 import { handleIncomingMediaAutoDownload } from '@/lib/storage-manager';
-import { X } from 'lucide-react';
+import {
+  X,
+  MessageSquare,
+  Video,
+  Bookmark,
+  Settings,
+  ShieldAlert,
+  Shield,
+} from 'lucide-react';
 import CallOverlay, { ActiveCallState } from '@/components/calls/CallOverlay';
 import OnyxMeetView from '@/components/calls/OnyxMeetView';
 import DevicePermissionsModal from '@/components/permissions/DevicePermissionsModal';
@@ -560,6 +568,74 @@ export default function MobileShell({
     );
   };
 
+  const handleStartCall = (conv: Conversation, type: 'voice' | 'video') => {
+    const partner = conv.participants?.find((p) => p.user_id !== currentUser.id)?.profile;
+    if (!partner) return;
+    const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    setActiveCall({
+      callId,
+      type,
+      direction: 'outgoing',
+      status: 'ringing',
+      partner,
+      conversationId: conv.id,
+    });
+
+    // Send ring notification to recipient channel
+    const targetChannel = supabase.channel(`user:${partner.id}`);
+    targetChannel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        targetChannel.send({
+          type: 'broadcast',
+          event: 'call_ring',
+          payload: {
+            recipientId: partner.id,
+            call: {
+              callId,
+              type,
+              partner: currentUser,
+              conversationId: conv.id,
+            },
+          },
+        });
+      }
+    });
+  };
+
+  const handleBroadcastMessage = (sentMsg: Message) => {
+    // Update feed conversation list snippet immediately
+    setConversations((prev) => {
+      const idx = prev.findIndex((c) => c.id === sentMsg.conversation_id);
+      if (idx === -1) return prev;
+      const target = prev[idx];
+      const updated = {
+        ...target,
+        last_message: sentMsg,
+        updated_at: sentMsg.created_at,
+      };
+      const next = [...prev];
+      next.splice(idx, 1);
+      return [updated, ...next];
+    });
+
+    // Forward notification to partner's user channel
+    if (userChannelRef.current && activeConversationRef.current) {
+      const partner = activeConversationRef.current.participants?.find(
+        (p) => p.user_id !== currentUser.id
+      )?.profile;
+      if (partner?.id) {
+        userChannelRef.current.send({
+          type: 'broadcast',
+          event: 'user_notification',
+          payload: {
+            recipient_id: partner.id,
+            message: sentMsg,
+          },
+        });
+      }
+    }
+  };
+
   const handleLogout = async () => {
     try {
       await supabase.auth.signOut();
@@ -571,7 +647,7 @@ export default function MobileShell({
   };
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col h-full w-full relative overflow-hidden">
+    <div className="flex-1 min-h-0 flex flex-col md:flex-row h-full w-full relative overflow-hidden bg-[#07080b]">
       {/* Floating Instagram/WhatsApp-style In-App Notification Banner */}
       {floatingBanner && (
         <div
@@ -612,8 +688,127 @@ export default function MobileShell({
         </div>
       )}
 
-      {/* View 1: Main Feed Screen */}
-      <div className="flex-1 min-h-0 flex flex-col h-full overflow-hidden">
+      {/* Desktop Left Navigation Rail (Visible ONLY on Desktop >= md) */}
+      <nav className="hidden md:flex flex-col w-[68px] shrink-0 bg-[#06070a] border-r border-white/10 items-center justify-between py-4 select-none z-20">
+        {/* Top Section: Logo & Main Navigation Tabs */}
+        <div className="flex flex-col items-center gap-5">
+          {/* Brand Emblem */}
+          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-brand-600 via-indigo-600 to-pink-600 p-[1px] shadow-lg shadow-brand-500/30">
+            <div className="w-full h-full bg-[#07080b] rounded-[15px] flex items-center justify-center font-black text-xs text-brand-300">
+              OX
+            </div>
+          </div>
+
+          {/* Nav Tabs */}
+          <div className="flex flex-col items-center gap-2">
+            {/* Chats */}
+            <button
+              onClick={() => {
+                setActiveTab('chats');
+                setIsSearchOpen(false);
+              }}
+              className={`relative p-3 rounded-2xl transition-all duration-200 group ${
+                activeTab === 'chats'
+                  ? 'bg-brand-500/20 text-brand-300 border border-brand-500/40 shadow-md shadow-brand-500/20'
+                  : 'text-slate-400 hover:text-white hover:bg-white/5'
+              }`}
+              title="Chats"
+              aria-label="Chats"
+            >
+              <MessageSquare className="w-5 h-5" />
+              {totalUnreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-brand-500 text-white text-[10px] font-bold font-mono flex items-center justify-center shadow-md animate-pulse">
+                  {totalUnreadCount > 99 ? '99+' : totalUnreadCount}
+                </span>
+              )}
+            </button>
+
+            {/* Meet */}
+            <button
+              onClick={() => {
+                setActiveTab('meet');
+                setIsSearchOpen(false);
+              }}
+              className={`p-3 rounded-2xl transition-all duration-200 ${
+                activeTab === 'meet'
+                  ? 'bg-brand-500/20 text-brand-300 border border-brand-500/40 shadow-md shadow-brand-500/20'
+                  : 'text-slate-400 hover:text-white hover:bg-white/5'
+              }`}
+              title="Onyx Meet (Video & Audio Rooms)"
+              aria-label="Meet"
+            >
+              <Video className="w-5 h-5" />
+            </button>
+
+            {/* Vault */}
+            <button
+              onClick={() => {
+                setActiveTab('vault');
+                setIsSearchOpen(false);
+              }}
+              className={`p-3 rounded-2xl transition-all duration-200 ${
+                activeTab === 'vault'
+                  ? 'bg-brand-500/20 text-brand-300 border border-brand-500/40 shadow-md shadow-brand-500/20'
+                  : 'text-slate-400 hover:text-white hover:bg-white/5'
+              }`}
+              title="Personal Vault & Saved Notes"
+              aria-label="Vault"
+            >
+              <Bookmark className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Bottom Section: Admin, Settings, Profile */}
+        <div className="flex flex-col items-center gap-3">
+          {currentUser.is_admin && (
+            <button
+              onClick={() => router.push('/admin')}
+              className="p-3 rounded-2xl text-amber-400 hover:bg-amber-500/10 border border-amber-500/20 transition-colors"
+              title="Admin Portal"
+              aria-label="Admin Portal"
+            >
+              <ShieldAlert className="w-5 h-5" />
+            </button>
+          )}
+
+          <button
+            onClick={() => {
+              setActiveTab('settings');
+              setIsSearchOpen(false);
+            }}
+            className={`p-3 rounded-2xl transition-all duration-200 ${
+              activeTab === 'settings'
+                ? 'bg-brand-500/20 text-brand-300 border border-brand-500/40'
+                : 'text-slate-400 hover:text-white hover:bg-white/5'
+            }`}
+            title="Settings"
+            aria-label="Settings"
+          >
+            <Settings className="w-5 h-5" />
+          </button>
+
+          {/* User Profile Avatar */}
+          <button
+            onClick={() => setEditProfileModalOpen(true)}
+            className="relative w-10 h-10 rounded-full bg-slate-800 border border-white/20 overflow-hidden hover:scale-105 transition-transform"
+            title="Profile"
+            aria-label="Profile"
+          >
+            {currentUser.avatar_url ? (
+              <img src={currentUser.avatar_url} alt="" className="w-full h-full object-cover" />
+            ) : (
+              <span className="font-bold text-xs text-brand-300 flex items-center justify-center w-full h-full">
+                {currentUser.full_name?.slice(0, 2).toUpperCase() || 'OX'}
+              </span>
+            )}
+            <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-[#06070a]" />
+          </button>
+        </div>
+      </nav>
+
+      {/* Pane 1: Feed Pane (Full-screen on Mobile, Fixed Sidebar on Desktop) */}
+      <div className="flex-1 min-h-0 flex flex-col h-full overflow-hidden md:flex-initial md:w-[340px] lg:w-[380px] xl:w-[420px] md:border-r md:border-white/10 shrink-0 relative bg-[#07080b]">
         {/* Header */}
         <MobileHeader
           currentUser={currentUser}
@@ -663,20 +858,22 @@ export default function MobileShell({
           )}
         </div>
 
-        {/* Native Bottom Navigation Bar */}
-        <MobileBottomNav
-          activeTab={activeTab}
-          onSelectTab={(tab) => {
-            setActiveTab(tab);
-            setIsSearchOpen(false);
-          }}
-          totalUnreadCount={totalUnreadCount}
-        />
+        {/* Mobile Bottom Navigation Bar (Hidden on Desktop >= md) */}
+        <div className="md:hidden shrink-0">
+          <MobileBottomNav
+            activeTab={activeTab}
+            onSelectTab={(tab) => {
+              setActiveTab(tab);
+              setIsSearchOpen(false);
+            }}
+            totalUnreadCount={totalUnreadCount}
+          />
+        </div>
       </div>
 
-      {/* View 2: Active Chat View (Slides in from the right) */}
+      {/* View 2: Mobile Active Chat Overlay (Slides in from the right ONLY on Mobile < md) */}
       <div
-        className={`absolute inset-0 z-30 bg-[#07080b] flex flex-col w-full h-full overflow-hidden transition-all duration-300 ease-out ${
+        className={`md:hidden absolute inset-0 z-30 bg-[#07080b] flex flex-col w-full h-full overflow-hidden transition-all duration-300 ease-out ${
           activeConversation
             ? 'translate-x-0 opacity-100 pointer-events-auto visible'
             : 'translate-x-full opacity-0 pointer-events-none invisible'
@@ -684,7 +881,7 @@ export default function MobileShell({
       >
         {activeConversation && (
           <MobileActiveChat
-            key={activeConversation.id}
+            key={`mobile-${activeConversation.id}`}
             conversation={activeConversation}
             currentUser={currentUser}
             onlineUserIds={onlineUserIds}
@@ -692,73 +889,77 @@ export default function MobileShell({
             currentTheme={currentTheme}
             onDeleteConversation={handleDeleteConversation}
             onClearConversation={handleClearConversation}
-            onStartCall={(conv, type) => {
-              const partner = conv.participants?.find((p) => p.user_id !== currentUser.id)?.profile;
-              if (!partner) return;
-              const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-              setActiveCall({
-                callId,
-                type,
-                direction: 'outgoing',
-                status: 'ringing',
-                partner,
-                conversationId: conv.id,
-              });
-
-              // Send ring notification to recipient channel
-              const targetChannel = supabase.channel(`user:${partner.id}`);
-              targetChannel.subscribe((status) => {
-                if (status === 'SUBSCRIBED') {
-                  targetChannel.send({
-                    type: 'broadcast',
-                    event: 'call_ring',
-                    payload: {
-                      recipientId: partner.id,
-                      call: {
-                        callId,
-                        type,
-                        partner: currentUser,
-                        conversationId: conv.id,
-                      },
-                    },
-                  });
-                }
-              });
-            }}
-            onBroadcastMessage={(sentMsg) => {
-              // Update feed conversation list snippet immediately
-              setConversations((prev) => {
-                const idx = prev.findIndex((c) => c.id === sentMsg.conversation_id);
-                if (idx === -1) return prev;
-                const target = prev[idx];
-                const updated = {
-                  ...target,
-                  last_message: sentMsg,
-                  updated_at: sentMsg.created_at,
-                };
-                const next = [...prev];
-                next.splice(idx, 1);
-                return [updated, ...next];
-              });
-
-              // Forward notification to partner's user channel
-              if (userChannelRef.current) {
-                const partner = activeConversation.participants?.find(
-                  (p) => p.user_id !== currentUser.id
-                )?.profile;
-                if (partner?.id) {
-                  userChannelRef.current.send({
-                    type: 'broadcast',
-                    event: 'user_notification',
-                    payload: {
-                      recipient_id: partner.id,
-                      message: sentMsg,
-                    },
-                  });
-                }
-              }
-            }}
+            onStartCall={handleStartCall}
+            onBroadcastMessage={handleBroadcastMessage}
           />
+        )}
+      </div>
+
+      {/* Pane 2: Desktop Active Chat View or Empty State (Visible ONLY on Desktop >= md) */}
+      <div className="hidden md:flex flex-1 min-w-0 h-full flex-col relative bg-[#050608] overflow-hidden">
+        {activeConversation ? (
+          <MobileActiveChat
+            key={`desktop-${activeConversation.id}`}
+            conversation={activeConversation}
+            currentUser={currentUser}
+            onlineUserIds={onlineUserIds}
+            onBack={handleBackToFeed}
+            currentTheme={currentTheme}
+            onDeleteConversation={handleDeleteConversation}
+            onClearConversation={handleClearConversation}
+            onStartCall={handleStartCall}
+            onBroadcastMessage={handleBroadcastMessage}
+            isDesktop={true}
+          />
+        ) : (
+          /* Desktop Welcome / Empty State (WhatsApp Web / Telegram Desktop Style) */
+          <div className="flex-1 min-h-0 flex flex-col items-center justify-center p-8 text-center relative overflow-hidden select-none">
+            {/* Ambient Background Glow */}
+            <div className="absolute w-[500px] h-[500px] bg-brand-600/10 blur-[130px] rounded-full pointer-events-none -z-10 animate-pulse" />
+            <div className="absolute w-[300px] h-[300px] bg-indigo-600/10 blur-[90px] rounded-full pointer-events-none -z-10 translate-x-24 translate-y-24" />
+
+            {/* Glowing Brand Emblem */}
+            <div className="relative mb-6">
+              <div className="w-24 h-24 rounded-3xl bg-gradient-to-tr from-brand-600 via-indigo-600 to-pink-600 p-[1px] shadow-2xl shadow-brand-500/25 ring-1 ring-white/20">
+                <div className="w-full h-full bg-[#08090e] rounded-[23px] flex items-center justify-center">
+                  <span className="font-black text-3xl tracking-tighter bg-gradient-to-tr from-brand-400 via-white to-pink-400 bg-clip-text text-transparent">
+                    OX
+                  </span>
+                </div>
+              </div>
+              <div className="absolute -inset-2 rounded-3xl bg-brand-500/20 blur-xl -z-10" />
+            </div>
+
+            {/* Header Text */}
+            <h2 className="text-2xl font-extrabold text-white tracking-tight mb-2">
+              Onyx Web & Desktop
+            </h2>
+            <p className="text-sm text-slate-400 max-w-md leading-relaxed mb-8">
+              Send and receive messages with zero server bandwidth load, instant background synchronization, and persistent local storage.
+            </p>
+
+            {/* Feature Badges */}
+            <div className="flex flex-wrap items-center justify-center gap-3 max-w-lg mb-10">
+              <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/[0.03] border border-white/10 text-xs text-slate-300 shadow-sm">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>Zero Server Media Load</span>
+              </div>
+              <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/[0.03] border border-white/10 text-xs text-slate-300 shadow-sm">
+                <span className="text-brand-400">⚡</span>
+                <span>Sub-50ms WebSockets</span>
+              </div>
+              <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/[0.03] border border-white/10 text-xs text-slate-300 shadow-sm">
+                <span className="text-pink-400">📞</span>
+                <span>HD Voice & Video Calls</span>
+              </div>
+            </div>
+
+            {/* End-to-End Encryption Note */}
+            <div className="flex items-center gap-2 text-xs text-slate-500 font-medium">
+              <Shield className="w-3.5 h-3.5 text-slate-500" />
+              <span>End-to-end encrypted & private</span>
+            </div>
+          </div>
         )}
       </div>
 

@@ -59,6 +59,7 @@ interface MobileActiveChatProps {
   onStartCall?: (conversation: Conversation, type: 'voice' | 'video') => void;
   onDeleteConversation?: (conversationId: string) => void;
   onClearConversation?: (conversationId: string) => void;
+  isDesktop?: boolean;
 }
 
 export default function MobileActiveChat({
@@ -73,6 +74,7 @@ export default function MobileActiveChat({
   onStartCall,
   onDeleteConversation,
   onClearConversation,
+  isDesktop = false,
 }: MobileActiveChatProps) {
   const supabase = createClient();
   const activeChannelRef = useRef<any>(null);
@@ -1177,10 +1179,12 @@ export default function MobileActiveChat({
       {/* Sticky Native Header */}
       <header className="h-[calc(4rem+env(safe-area-inset-top,0px))] pt-[env(safe-area-inset-top,0px)] px-3 bg-[#07080b]/95 backdrop-blur-xl border-b border-white/10 flex items-center justify-between z-20 shrink-0 sticky top-0">
         <div className="flex items-center gap-2.5 overflow-hidden">
-          {/* Back Button */}
+          {/* Back Button (Hidden on Desktop if isDesktop is active) */}
           <button
             onClick={onBack}
-            className="p-2 -ml-1 rounded-full text-slate-300 hover:text-white active:bg-white/10 transition-colors touch-manipulation flex items-center justify-center shrink-0"
+            className={`p-2 -ml-1 rounded-full text-slate-300 hover:text-white active:bg-white/10 transition-colors touch-manipulation flex items-center justify-center shrink-0 ${
+              isDesktop ? 'md:hidden' : ''
+            }`}
             aria-label="Back to conversations"
           >
             <ArrowLeft className="w-5 h-5" />
@@ -1266,6 +1270,17 @@ export default function MobileActiveChat({
           >
             <MoreVertical className="w-4 h-4" />
           </button>
+
+          {isDesktop && (
+            <button
+              onClick={onBack}
+              className="p-2 rounded-full text-slate-400 hover:text-white active:bg-white/10 transition-colors"
+              title="Close chat"
+              aria-label="Close chat"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </header>
 
@@ -1273,7 +1288,7 @@ export default function MobileActiveChat({
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3.5 py-4 space-y-1 chat-scroll-viewport overscroll-contain"
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3.5 md:px-8 py-4 space-y-1 chat-scroll-viewport overscroll-contain max-w-5xl mx-auto w-full"
       >
         {isLoadingOlder && (
           <div className="py-2 flex justify-center items-center gap-2 text-xs text-brand-400 animate-fadeIn">
@@ -1354,8 +1369,9 @@ export default function MobileActiveChat({
       )}
 
       {/* Bottom Message Input Bar OR Instagram-style Accept/Decline Banner */}
-      {isIncomingRequest ? (
-        <div className="p-4 pb-[max(1rem,env(safe-area-inset-bottom,0px))] bg-[#090b12] border-t border-white/10 shrink-0 space-y-3 animate-slideUp">
+      <div className="w-full max-w-5xl mx-auto shrink-0">
+        {isIncomingRequest ? (
+          <div className="p-4 pb-[max(1rem,env(safe-area-inset-bottom,0px))] bg-[#090b12] border-t border-white/10 shrink-0 space-y-3 animate-slideUp">
           <div className="text-center space-y-1">
             <p className="text-xs font-bold text-white flex items-center justify-center gap-1.5">
               <span>Accept message request from {partner?.full_name || 'User'}?</span>
@@ -1478,6 +1494,7 @@ export default function MobileActiveChat({
           )}
         </div>
       )}
+      </div>
 
       {/* Attachment Bottom Sheet */}
       <MobileAttachmentSheet

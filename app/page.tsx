@@ -142,50 +142,51 @@ export default function MainPage() {
   }, [profile, supabase]);
 
   return (
-    <div className="flex-1 min-h-0 w-full h-full flex items-center justify-center bg-[#050608] sm:py-2 select-none overflow-hidden">
-      {/* Mobile Frame Container */}
-      <div className="w-full max-w-md h-full sm:h-[92vh] flex flex-col bg-[#090a0f] relative overflow-hidden sm:rounded-3xl sm:border sm:border-white/10 shadow-2xl">
-        {loading ? (
-          /* Styled Centered Brand Loader */
-          <div className="flex-1 min-h-0 w-full flex flex-col items-center justify-center p-6 text-white text-center gap-5">
-            <div className="relative">
-              <div className="w-20 h-20 rounded-3xl bg-gradient-to-tr from-brand-600 via-indigo-600 to-pink-600 flex items-center justify-center shadow-2xl shadow-brand-500/30 ring-1 ring-white/20 animate-pulse">
-                <span className="font-black text-2xl text-white tracking-tighter">OX</span>
-              </div>
-              <div className="absolute -inset-2 rounded-3xl bg-brand-500/20 blur-xl -z-10 animate-pulse" />
+    <div className="flex-1 min-h-0 w-full h-full flex items-center justify-center bg-[#050608] select-none overflow-hidden">
+      {loading ? (
+        /* Styled Centered Brand Loader */
+        <div className="w-full max-w-md h-full sm:h-auto sm:max-h-[92vh] flex flex-col items-center justify-center p-8 text-white text-center gap-5 bg-[#090a0f] sm:rounded-3xl sm:border sm:border-white/10 shadow-2xl my-auto">
+          <div className="relative">
+            <div className="w-20 h-20 rounded-3xl bg-gradient-to-tr from-brand-600 via-indigo-600 to-pink-600 flex items-center justify-center shadow-2xl shadow-brand-500/30 ring-1 ring-white/20 animate-pulse">
+              <span className="font-black text-2xl text-white tracking-tighter">OX</span>
             </div>
-
-            <div className="space-y-1">
-              <h1 className="text-2xl font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
-                Onyx
-              </h1>
-              <p className="text-[10px] font-mono tracking-widest text-brand-400 uppercase font-semibold">
-                Fast • Private • Borderless
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2.5 px-4 py-2 rounded-full bg-white/[0.04] border border-white/10 backdrop-blur-md">
-              <div className="w-3.5 h-3.5 border-2 border-brand-500/30 border-t-brand-400 rounded-full animate-spin" />
-              <span className="text-xs font-mono text-slate-400">Connecting to Onyx...</span>
-            </div>
+            <div className="absolute -inset-2 rounded-3xl bg-brand-500/20 blur-xl -z-10 animate-pulse" />
           </div>
-        ) : !profile ? (
-          /* Unauthenticated: Render Sign In / Create Account form */
+
+          <div className="space-y-1">
+            <h1 className="text-2xl font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
+              Onyx
+            </h1>
+            <p className="text-[10px] font-mono tracking-widest text-brand-400 uppercase font-semibold">
+              Fast • Private • Borderless
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2.5 px-4 py-2 rounded-full bg-white/[0.04] border border-white/10 backdrop-blur-md">
+            <div className="w-3.5 h-3.5 border-2 border-brand-500/30 border-t-brand-400 rounded-full animate-spin" />
+            <span className="text-xs font-mono text-slate-400">Connecting to Onyx...</span>
+          </div>
+        </div>
+      ) : !profile ? (
+        /* Unauthenticated: Render Sign In / Create Account form centered */
+        <div className="w-full max-w-md h-full sm:h-auto sm:max-h-[92vh] flex flex-col bg-[#090a0f] sm:rounded-3xl sm:border sm:border-white/10 shadow-2xl overflow-hidden my-auto">
           <AuthView
             onAuthSuccess={(newProfile) => {
               setUser(newProfile);
               setProfile(newProfile);
             }}
           />
-        ) : (
-          /* Authenticated: Render Native Mobile Messenger */
+        </div>
+      ) : (
+        /* Authenticated: Render Native Messenger (Mobile full-screen, Desktop dual-pane) */
+        <div className="w-full h-full flex flex-col bg-[#07080b] overflow-hidden">
           <MobileChatLayout
             currentUser={profile}
             onUpdateCurrentUser={(updated) => setProfile(updated)}
             onlineUserIds={onlineUserIds}
           />
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
