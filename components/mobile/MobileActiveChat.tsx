@@ -14,6 +14,7 @@ import {
   saveCachedMessage,
   updateCachedMessage,
   deleteCachedMessage,
+  clearConversationCache,
 } from '@/lib/chat-cache';
 import { resolveLocalMediaUrl } from '@/lib/media-cache';
 import { compressImage, isCompressibleImage } from '@/lib/image-compression';
@@ -35,6 +36,10 @@ import {
   Phone,
   Video,
   Download,
+  MoreVertical,
+  Trash2,
+  Eraser,
+  AlertTriangle,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import {
@@ -52,6 +57,8 @@ interface MobileActiveChatProps {
   onBroadcastMessage?: (msg: Message) => void;
   currentTheme?: OnyxTheme;
   onStartCall?: (conversation: Conversation, type: 'voice' | 'video') => void;
+  onDeleteConversation?: (conversationId: string) => void;
+  onClearConversation?: (conversationId: string) => void;
 }
 
 export default function MobileActiveChat({
@@ -64,6 +71,8 @@ export default function MobileActiveChat({
   onBroadcastMessage,
   currentTheme = 'onyx-pure',
   onStartCall,
+  onDeleteConversation,
+  onClearConversation,
 }: MobileActiveChatProps) {
   const supabase = createClient();
   const activeChannelRef = useRef<any>(null);
@@ -80,6 +89,11 @@ export default function MobileActiveChat({
   const [loading, setLoading] = useState(true);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const [hasMoreOlder, setHasMoreOlder] = useState(true);
+
+  // Chat Options & Deletion State
+  const [chatMenuOpen, setChatMenuOpen] = useState(false);
+  const [confirmModal, setConfirmModal] = useState<{ mode: 'clear' | 'delete' } | null>(null);
+  const [actionInProgress, setActionInProgress] = useState(false);
 
   // Local typing indicators from Realtime Broadcast
   const [localTypingMap, setLocalTypingMap] = useState<{ [userId: string]: string }>({});
@@ -380,6 +394,25 @@ export default function MobileActiveChat({
       if (conversationId === conversation.id) {
         setIsIncomingRequest(false);
         setIsOutgoingRequest(false);
+      }
+    });
+
+    // 5c. WebSocket Broadcast: Whole Chat Cleared
+    channel.on('broadcast', { event: 'chat_cleared' }, async (payload) => {
+      const { conversationId } = payload.payload || {};
+      if (conversationId === conversation.id) {
+        await clearConversationCache(conversation.id);
+        setMessages([]);
+        onClearConversation?.(conversation.id);
+      }
+    });
+
+    // 5d. WebSocket Broadcast: Whole Chat Deleted
+    channel.on('broadcast', { event: 'chat_deleted' }, async (payload) => {
+      const { conversationId } = payload.payload || {};
+      if (conversationId === conversation.id) {
+        await clearConversationCache(conversation.id);
+        onDeleteConversation?.(conversation.id);
       }
     });
 
@@ -742,6 +775,64 @@ export default function MobileActiveChat({
       alert(err.message || 'Error declining request');
     } finally {
       setRequestActionLoading(false);
+    }
+  };
+
+  // Execute Clear Chat or Delete Whole Chat
+  const handleExecuteChatAction = async (mode: 'clear' | 'delete') => {
+    setActionInProgress(true);
+    try {
+      const res = await fetch(
+        `/api/chat/conversations?conversation_id=${encodeURIComponent(conversation.id)}&mode=${mode}`,
+        { method: 'DELETE' }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Failed to ${mode} chat`);
+
+      // Clear local IndexedDB cache immediately
+      await clearConversationCache(conversation.id);
+
+      // Broadcast over room channel
+      if (activeChannelRef.current) {
+        activeChannelRef.current.send({
+          type: 'broadcast',
+          event: mode === 'delete' ? 'chat_deleted' : 'chat_cleared',
+          payload: { conversationId: conversation.id },
+        });
+      }
+
+      // Broadcast to partner user channels
+      const otherParticipantIds = (conversation.participants || [])
+        .map((p) => p.user_id)
+        .filter((uid) => uid !== currentUser.id);
+
+      otherParticipantIds.forEach((uid) => {
+        const pChannel = supabase.channel(`user:${uid}`);
+        pChannel.subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            pChannel.send({
+              type: 'broadcast',
+              event: mode === 'delete' ? 'chat_deleted' : 'chat_cleared',
+              payload: { conversation_id: conversation.id },
+            });
+          }
+        });
+      });
+
+      if (mode === 'clear') {
+        setMessages([]);
+        setConfirmModal(null);
+        setChatMenuOpen(false);
+        onClearConversation?.(conversation.id);
+      } else {
+        setConfirmModal(null);
+        setChatMenuOpen(false);
+        onDeleteConversation?.(conversation.id);
+      }
+    } catch (err: any) {
+      alert(err.message || `Error attempting to ${mode} chat`);
+    } finally {
+      setActionInProgress(false);
     }
   };
 
@@ -1144,27 +1235,38 @@ export default function MobileActiveChat({
           </div>
         </div>
 
-        {/* WhatsApp Voice & Video Call Buttons */}
-        {!isSaved && (
-          <div className="flex items-center gap-1 shrink-0">
-            <button
-              onClick={() => onStartCall?.(conversation, 'voice')}
-              className="p-2 rounded-full text-slate-300 hover:text-white active:bg-white/10 transition-colors"
-              title="Voice Call"
-              aria-label="Voice Call"
-            >
-              <Phone className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => onStartCall?.(conversation, 'video')}
-              className="p-2 rounded-full text-slate-300 hover:text-white active:bg-white/10 transition-colors"
-              title="Video Call"
-              aria-label="Video Call"
-            >
-              <Video className="w-4 h-4" />
-            </button>
-          </div>
-        )}
+        {/* Call & Chat Options Action Header Buttons */}
+        <div className="flex items-center gap-1 shrink-0">
+          {!isSaved && (
+            <>
+              <button
+                onClick={() => onStartCall?.(conversation, 'voice')}
+                className="p-2 rounded-full text-slate-300 hover:text-white active:bg-white/10 transition-colors"
+                title="Voice Call"
+                aria-label="Voice Call"
+              >
+                <Phone className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => onStartCall?.(conversation, 'video')}
+                className="p-2 rounded-full text-slate-300 hover:text-white active:bg-white/10 transition-colors"
+                title="Video Call"
+                aria-label="Video Call"
+              >
+                <Video className="w-4 h-4" />
+              </button>
+            </>
+          )}
+
+          <button
+            onClick={() => setChatMenuOpen(true)}
+            className="p-2 rounded-full text-slate-300 hover:text-white active:bg-white/10 transition-colors"
+            title="Chat Options"
+            aria-label="Chat Options"
+          >
+            <MoreVertical className="w-4 h-4" />
+          </button>
+        </div>
       </header>
 
       {/* Messages Feed Viewport */}
@@ -1399,6 +1501,157 @@ export default function MobileActiveChat({
         onEditMessage={handleEditMessage}
         onDeleteMessage={handleDeleteMessage}
       />
+
+      {/* Chat Options Bottom Sheet */}
+      {chatMenuOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm flex items-end justify-center animate-fadeIn"
+          onClick={() => setChatMenuOpen(false)}
+        >
+          <div
+            className="w-full max-w-md bg-[#0e1017] border-t border-white/10 rounded-t-3xl p-5 shadow-2xl animate-fadeIn gpu-accelerated space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-10 h-1 rounded-full bg-white/20 mx-auto mb-2" />
+
+            <div className="flex items-center justify-between pb-2 border-b border-white/5">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-full bg-slate-800 border border-white/10 flex items-center justify-center font-bold text-xs text-brand-300 overflow-hidden">
+                  {partner?.avatar_url ? (
+                    <img src={partner.avatar_url} alt={chatTitle} className="w-full h-full object-cover" />
+                  ) : (
+                    chatTitle.slice(0, 2).toUpperCase()
+                  )}
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-white truncate max-w-[200px]">{chatTitle}</h4>
+                  <p className="text-[10px] text-slate-400">Manage Conversation</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setChatMenuOpen(false)}
+                className="p-1.5 rounded-full text-slate-400 hover:text-white bg-white/5"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-1">
+              <button
+                onClick={() => {
+                  setChatMenuOpen(false);
+                  setConfirmModal({ mode: 'clear' });
+                }}
+                className="w-full flex items-center gap-3 p-3 rounded-2xl hover:bg-white/5 active:bg-white/10 transition-colors text-left"
+              >
+                <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                  <Eraser className="w-4 h-4" />
+                </div>
+                <div>
+                  <span className="text-xs font-semibold text-white block">Clear Chat History</span>
+                  <span className="text-[10px] text-slate-400 block">Delete all messages. Chat stays in your list.</span>
+                </div>
+              </button>
+
+              <button
+                onClick={() => {
+                  setChatMenuOpen(false);
+                  setConfirmModal({ mode: 'delete' });
+                }}
+                className="w-full flex items-center gap-3 p-3 rounded-2xl hover:bg-rose-500/10 active:bg-rose-500/20 transition-colors text-left"
+              >
+                <div className="w-9 h-9 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-center shrink-0">
+                  <Trash2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <span className="text-xs font-semibold text-rose-400 block">Delete Entire Chat</span>
+                  <span className="text-[10px] text-slate-400 block">Permanently remove chat, participants, and all messages.</span>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear / Delete Whole Chat Confirmation Modal */}
+      {confirmModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4 animate-fadeIn"
+          onClick={() => !actionInProgress && setConfirmModal(null)}
+        >
+          <div
+            className="w-full max-w-sm bg-[#0e1017] border border-white/10 rounded-3xl p-6 shadow-2xl space-y-4 animate-scaleUp"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <div
+                className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
+                  confirmModal.mode === 'delete'
+                    ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
+                    : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                }`}
+              >
+                {confirmModal.mode === 'delete' ? (
+                  <Trash2 className="w-6 h-6" />
+                ) : (
+                  <Eraser className="w-6 h-6" />
+                )}
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">
+                  {confirmModal.mode === 'delete' ? 'Delete Whole Chat?' : 'Clear Chat Messages?'}
+                </h3>
+                <p className="text-xs text-slate-400">
+                  {confirmModal.mode === 'delete'
+                    ? 'Permanently delete this chat'
+                    : 'Clear all messages'}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-400 bg-white/[0.03] p-3 rounded-xl border border-white/5 leading-relaxed">
+              {confirmModal.mode === 'delete'
+                ? 'Are you sure you want to delete this entire chat? This action cannot be reversed and will wipe history for all members.'
+                : 'Are you sure you want to clear all messages? The empty conversation will remain in your chat list.'}
+            </p>
+
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                disabled={actionInProgress}
+                onClick={() => setConfirmModal(null)}
+                className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-semibold text-slate-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={actionInProgress}
+                onClick={() => handleExecuteChatAction(confirmModal.mode)}
+                className={`flex-1 py-2.5 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-1.5 transition-all shadow-lg ${
+                  confirmModal.mode === 'delete'
+                    ? 'bg-gradient-to-r from-rose-600 to-red-600 shadow-rose-600/30 hover:brightness-110 active:scale-98'
+                    : 'bg-gradient-to-r from-amber-600 to-orange-600 shadow-amber-600/30 hover:brightness-110 active:scale-98'
+                }`}
+              >
+                {actionInProgress ? (
+                  <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                ) : confirmModal.mode === 'delete' ? (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    <span>Delete Chat</span>
+                  </>
+                ) : (
+                  <>
+                    <Eraser className="w-4 h-4" />
+                    <span>Clear Messages</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

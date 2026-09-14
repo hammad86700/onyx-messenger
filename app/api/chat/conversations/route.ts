@@ -2,6 +2,8 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { createClient as createServerSupabase } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: NextRequest) {
   try {
     const supabase = createServerSupabase();
@@ -316,6 +318,125 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid conversation type' }, { status: 400 });
   } catch (err: any) {
     console.error('Create conversation error:', err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+// DELETE: Delete or Clear the whole chat
+export async function DELETE(request: NextRequest) {
+  try {
+    const supabase = createServerSupabase();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const conversationId = searchParams.get('conversation_id');
+    const mode = searchParams.get('mode') || 'delete'; // 'delete' or 'clear'
+
+    if (!conversationId) {
+      return NextResponse.json({ error: 'conversation_id is required' }, { status: 400 });
+    }
+
+    // Verify user is a participant
+    const { data: participation } = await supabaseAdmin
+      .from('conversation_participants')
+      .select('user_id, is_group_admin')
+      .eq('conversation_id', conversationId)
+      .eq('user_id', user.id)
+      .maybeSingle();
+
+    if (!participation) {
+      return NextResponse.json({ error: 'Forbidden: You are not in this conversation' }, { status: 403 });
+    }
+
+    // Get participant IDs so callers and socket channels can broadcast deletion
+    const { data: allParticipants } = await supabaseAdmin
+      .from('conversation_participants')
+      .select('user_id')
+      .eq('conversation_id', conversationId);
+    const participantUserIds = (allParticipants || []).map((p) => p.user_id);
+
+    // 1. Fetch message IDs in this conversation to clean up reactions & starred
+    const { data: convMessages } = await supabaseAdmin
+      .from('messages')
+      .select('id')
+      .eq('conversation_id', conversationId);
+
+    const messageIds = (convMessages || []).map((m) => m.id);
+
+    if (messageIds.length > 0) {
+      try {
+        await supabaseAdmin.from('message_reactions').delete().in('message_id', messageIds);
+      } catch (e) {
+        console.warn('Reactions cleanup error:', e);
+      }
+
+      try {
+        await supabaseAdmin.from('starred_messages').delete().in('message_id', messageIds);
+      } catch (e) {
+        console.warn('Starred cleanup error:', e);
+      }
+    }
+
+    // 2. Delete all messages in the conversation
+    const { error: delMsgErr } = await supabaseAdmin
+      .from('messages')
+      .delete()
+      .eq('conversation_id', conversationId);
+
+    if (delMsgErr) {
+      console.error('Delete messages error:', delMsgErr);
+    }
+
+    if (mode === 'clear') {
+      // Clear mode: messages deleted, update conversation updated_at
+      await supabaseAdmin
+        .from('conversations')
+        .update({ updated_at: new Date().toISOString() })
+        .eq('id', conversationId);
+
+      return NextResponse.json({
+        success: true,
+        mode: 'clear',
+        conversation_id: conversationId,
+        participant_ids: participantUserIds,
+        message: 'All messages in this conversation have been cleared.',
+      });
+    }
+
+    // Mode is 'delete': remove participants and delete the conversation itself
+    try {
+      await supabaseAdmin
+        .from('conversation_participants')
+        .delete()
+        .eq('conversation_id', conversationId);
+    } catch (e) {
+      console.warn('Delete participants error:', e);
+    }
+
+    const { error: delConvErr } = await supabaseAdmin
+      .from('conversations')
+      .delete()
+      .eq('id', conversationId);
+
+    if (delConvErr) {
+      console.error('Delete conversation error:', delConvErr);
+    }
+
+    return NextResponse.json({
+      success: true,
+      mode: 'delete',
+      conversation_id: conversationId,
+      participant_ids: participantUserIds,
+      message: 'The whole chat has been permanently deleted.',
+    });
+  } catch (err: any) {
+    console.error('Delete conversation error:', err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }

@@ -4,6 +4,8 @@ import React, { useState, useEffect } from 'react';
 import { Conversation, Profile, isFounder } from '@/types/database';
 import { formatMessageTime, formatLastSeen } from '@/lib/utils';
 import FounderBadge from '@/components/chat/FounderBadge';
+import { clearConversationCache } from '@/lib/chat-cache';
+import { createClient } from '@/lib/supabase/client';
 import {
   Search,
   Pin,
@@ -21,6 +23,10 @@ import {
   ChevronRight,
   ArrowLeft,
   ShieldAlert,
+  MoreVertical,
+  Trash2,
+  Eraser,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface MobileChatListProps {
@@ -32,6 +38,8 @@ interface MobileChatListProps {
   onStartDirectChat?: (userId: string) => void;
   isSearchOpen?: boolean;
   onCloseSearch?: () => void;
+  onDeleteConversation?: (conversationId: string) => void;
+  onClearConversation?: (conversationId: string) => void;
 }
 
 export default function MobileChatList({
@@ -43,12 +51,76 @@ export default function MobileChatList({
   onStartDirectChat,
   isSearchOpen = false,
   onCloseSearch,
+  onDeleteConversation,
+  onClearConversation,
 }: MobileChatListProps) {
+  const supabase = createClient();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Profile[]>([]);
   const [searching, setSearching] = useState(false);
   const [startingChatId, setStartingChatId] = useState<string | null>(null);
   const [viewingRequests, setViewingRequests] = useState(false);
+
+  // Chat options & deletion state
+  const [selectedConvForOptions, setSelectedConvForOptions] = useState<Conversation | null>(null);
+  const [confirmAction, setConfirmAction] = useState<{ conv: Conversation; mode: 'clear' | 'delete' } | null>(null);
+  const [actionInProgress, setActionInProgress] = useState(false);
+
+  const handleExecuteAction = async (conv: Conversation, mode: 'clear' | 'delete') => {
+    setActionInProgress(true);
+    try {
+      const res = await fetch(
+        `/api/chat/conversations?conversation_id=${encodeURIComponent(conv.id)}&mode=${mode}`,
+        { method: 'DELETE' }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Failed to ${mode} chat`);
+
+      await clearConversationCache(conv.id);
+
+      // Broadcast over chat room channel
+      const roomChannel = supabase.channel(`chat-room:${conv.id}`);
+      roomChannel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          roomChannel.send({
+            type: 'broadcast',
+            event: mode === 'delete' ? 'chat_deleted' : 'chat_cleared',
+            payload: { conversationId: conv.id },
+          });
+        }
+      });
+
+      // Broadcast to partner user channels
+      const otherParticipantIds = (conv.participants || [])
+        .map((p) => p.user_id)
+        .filter((uid) => uid !== currentUser.id);
+
+      otherParticipantIds.forEach((uid) => {
+        const pChannel = supabase.channel(`user:${uid}`);
+        pChannel.subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            pChannel.send({
+              type: 'broadcast',
+              event: mode === 'delete' ? 'chat_deleted' : 'chat_cleared',
+              payload: { conversation_id: conv.id },
+            });
+          }
+        });
+      });
+
+      if (mode === 'clear') {
+        onClearConversation?.(conv.id);
+      } else {
+        onDeleteConversation?.(conv.id);
+      }
+      setConfirmAction(null);
+      setSelectedConvForOptions(null);
+    } catch (err: any) {
+      alert(err.message || `Error attempting to ${mode} chat`);
+    } finally {
+      setActionInProgress(false);
+    }
+  };
 
   // Live user search by username / query
   useEffect(() => {
@@ -471,6 +543,19 @@ export default function MobileChatList({
                           {conv.unread_count}
                         </span>
                       )}
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedConvForOptions(conv);
+                        }}
+                        className="p-1 rounded-full text-slate-400 hover:text-white hover:bg-white/10 transition-colors opacity-70 hover:opacity-100"
+                        title="Chat Options"
+                        aria-label="Chat Options"
+                      >
+                        <MoreVertical className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -481,6 +566,169 @@ export default function MobileChatList({
           </>
         )}
       </div>
+
+      {/* Chat Options Bottom Sheet */}
+      {selectedConvForOptions && (
+        <div
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm flex items-end justify-center animate-fadeIn"
+          onClick={() => setSelectedConvForOptions(null)}
+        >
+          <div
+            className="w-full max-w-md bg-[#0e1017] border-t border-white/10 rounded-t-3xl p-5 shadow-2xl animate-fadeIn gpu-accelerated space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-10 h-1 rounded-full bg-white/20 mx-auto mb-2" />
+
+            <div className="flex items-center justify-between pb-2 border-b border-white/5">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-full bg-slate-800 border border-white/10 flex items-center justify-center font-bold text-xs text-brand-300 overflow-hidden">
+                  {selectedConvForOptions.participants?.find((p) => p.user_id !== currentUser.id)?.profile?.avatar_url ? (
+                    <img
+                      src={selectedConvForOptions.participants.find((p) => p.user_id !== currentUser.id)!.profile.avatar_url!}
+                      alt="Chat"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    (selectedConvForOptions.name || 'Chat').slice(0, 2).toUpperCase()
+                  )}
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-white truncate max-w-[200px]">
+                    {selectedConvForOptions.type === 'saved'
+                      ? 'Saved Messages'
+                      : selectedConvForOptions.type === 'group'
+                      ? selectedConvForOptions.name || 'Group Chat'
+                      : selectedConvForOptions.participants?.find((p) => p.user_id !== currentUser.id)?.profile?.full_name || 'Chat'}
+                  </h4>
+                  <p className="text-[10px] text-slate-400">Manage Conversation</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setSelectedConvForOptions(null)}
+                className="p-1.5 rounded-full text-slate-400 hover:text-white bg-white/5"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-1">
+              <button
+                onClick={() => {
+                  const conv = selectedConvForOptions;
+                  setSelectedConvForOptions(null);
+                  setConfirmAction({ conv, mode: 'clear' });
+                }}
+                className="w-full flex items-center gap-3 p-3 rounded-2xl hover:bg-white/5 active:bg-white/10 transition-colors text-left"
+              >
+                <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                  <Eraser className="w-4 h-4" />
+                </div>
+                <div>
+                  <span className="text-xs font-semibold text-white block">Clear Chat History</span>
+                  <span className="text-[10px] text-slate-400 block">Delete all messages. Chat stays in your list.</span>
+                </div>
+              </button>
+
+              <button
+                onClick={() => {
+                  const conv = selectedConvForOptions;
+                  setSelectedConvForOptions(null);
+                  setConfirmAction({ conv, mode: 'delete' });
+                }}
+                className="w-full flex items-center gap-3 p-3 rounded-2xl hover:bg-rose-500/10 active:bg-rose-500/20 transition-colors text-left"
+              >
+                <div className="w-9 h-9 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-center shrink-0">
+                  <Trash2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <span className="text-xs font-semibold text-rose-400 block">Delete Entire Chat</span>
+                  <span className="text-[10px] text-slate-400 block">Permanently remove chat, participants, and all messages.</span>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear / Delete Whole Chat Confirmation Modal */}
+      {confirmAction && (
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4 animate-fadeIn"
+          onClick={() => !actionInProgress && setConfirmAction(null)}
+        >
+          <div
+            className="w-full max-w-sm bg-[#0e1017] border border-white/10 rounded-3xl p-6 shadow-2xl space-y-4 animate-scaleUp"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <div
+                className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
+                  confirmAction.mode === 'delete'
+                    ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
+                    : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                }`}
+              >
+                {confirmAction.mode === 'delete' ? (
+                  <Trash2 className="w-6 h-6" />
+                ) : (
+                  <Eraser className="w-6 h-6" />
+                )}
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">
+                  {confirmAction.mode === 'delete' ? 'Delete Whole Chat?' : 'Clear Chat Messages?'}
+                </h3>
+                <p className="text-xs text-slate-400">
+                  {confirmAction.mode === 'delete'
+                    ? 'Permanently delete this chat'
+                    : 'Clear all messages'}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-400 bg-white/[0.03] p-3 rounded-xl border border-white/5 leading-relaxed">
+              {confirmAction.mode === 'delete'
+                ? 'Are you sure you want to delete this entire chat? This action cannot be reversed and will wipe history for all members.'
+                : 'Are you sure you want to clear all messages? The empty conversation will remain in your chat list.'}
+            </p>
+
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                disabled={actionInProgress}
+                onClick={() => setConfirmAction(null)}
+                className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-semibold text-slate-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={actionInProgress}
+                onClick={() => handleExecuteAction(confirmAction.conv, confirmAction.mode)}
+                className={`flex-1 py-2.5 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-1.5 transition-all shadow-lg ${
+                  confirmAction.mode === 'delete'
+                    ? 'bg-gradient-to-r from-rose-600 to-red-600 shadow-rose-600/30 hover:brightness-110 active:scale-98'
+                    : 'bg-gradient-to-r from-amber-600 to-orange-600 shadow-amber-600/30 hover:brightness-110 active:scale-98'
+                }`}
+              >
+                {actionInProgress ? (
+                  <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                ) : confirmAction.mode === 'delete' ? (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    <span>Delete Chat</span>
+                  </>
+                ) : (
+                  <>
+                    <Eraser className="w-4 h-4" />
+                    <span>Clear Messages</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

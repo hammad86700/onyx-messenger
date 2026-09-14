@@ -14,7 +14,7 @@ import StarredDrawer from '@/components/chat/StarredDrawer';
 import EditProfileModal from '@/components/chat/EditProfileModal';
 import ChangePasswordModal from '@/components/chat/ChangePasswordModal';
 import NewGroupModal from '@/components/chat/NewGroupModal';
-import { saveCachedMessage } from '@/lib/chat-cache';
+import { saveCachedMessage, clearConversationCache } from '@/lib/chat-cache';
 import { playReceiveSound } from '@/lib/sound';
 import {
   sendSystemNotification,
@@ -297,6 +297,32 @@ export default function MobileShell({
       fetchConversations();
     });
 
+    // Real-Time Chat Deleted / Cleared Listeners
+    channel.on('broadcast', { event: 'chat_deleted' }, async (payload) => {
+      const { conversation_id, conversationId } = payload.payload || {};
+      const targetId = conversation_id || conversationId;
+      if (targetId) {
+        await clearConversationCache(targetId);
+        setConversations((prev) => prev.filter((c) => c.id !== targetId));
+        if (activeConversationRef.current?.id === targetId) {
+          setActiveConversation(null);
+        }
+      }
+    });
+
+    channel.on('broadcast', { event: 'chat_cleared' }, async (payload) => {
+      const { conversation_id, conversationId } = payload.payload || {};
+      const targetId = conversation_id || conversationId;
+      if (targetId) {
+        await clearConversationCache(targetId);
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.id === targetId ? { ...c, last_message: null, unread_count: 0 } : c
+          )
+        );
+      }
+    });
+
     // Real-Time 1-on-1 Call Signaling Listeners (Ring Alert)
     channel.on('broadcast', { event: 'call_ring' }, (payload) => {
       const data = payload.payload;
@@ -517,6 +543,23 @@ export default function MobileShell({
     }
   };
 
+  const handleDeleteConversation = async (conversationId: string) => {
+    await clearConversationCache(conversationId);
+    setConversations((prev) => prev.filter((c) => c.id !== conversationId));
+    if (activeConversationRef.current?.id === conversationId) {
+      setActiveConversation(null);
+    }
+  };
+
+  const handleClearConversation = async (conversationId: string) => {
+    await clearConversationCache(conversationId);
+    setConversations((prev) =>
+      prev.map((c) =>
+        c.id === conversationId ? { ...c, last_message: null, unread_count: 0 } : c
+      )
+    );
+  };
+
   const handleLogout = async () => {
     try {
       await supabase.auth.signOut();
@@ -590,6 +633,8 @@ export default function MobileShell({
               onlineUserIds={onlineUserIds}
               isSearchOpen={isSearchOpen}
               onCloseSearch={() => setIsSearchOpen(false)}
+              onDeleteConversation={handleDeleteConversation}
+              onClearConversation={handleClearConversation}
             />
           )}
 
@@ -645,6 +690,8 @@ export default function MobileShell({
             onlineUserIds={onlineUserIds}
             onBack={handleBackToFeed}
             currentTheme={currentTheme}
+            onDeleteConversation={handleDeleteConversation}
+            onClearConversation={handleClearConversation}
             onStartCall={(conv, type) => {
               const partner = conv.participants?.find((p) => p.user_id !== currentUser.id)?.profile;
               if (!partner) return;
